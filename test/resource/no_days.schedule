@@ -1,0 +1,16 @@
+{
+    "schedule": {
+        "weekly": {
+            "run_time": "12:00pm",
+            "run_day": "Friday",
+            "verbose": 1
+        },
+        "nightly": {
+            "run_time": "2:00am",
+            "open_ahead": 3,
+            "close_behind": 1,
+            "clean_behind": 1,
+            "verbose": 1
+        }
+    }
+}

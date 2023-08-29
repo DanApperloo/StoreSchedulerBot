@@ -1,0 +1,60 @@
+{
+    "schedule": {
+        "weekly": {
+            "run_time": "12:00pm",
+            "run_day": "Friday",
+            "verbose": 1
+        },
+        "nightly": {
+            "run_time": "2:00am",
+            "open_ahead": 3,
+            "close_behind": 1,
+            "clean_behind": 1,
+            "verbose": 1
+        },
+        "days": {
+            "monday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "6:00pm",
+                "slot_duration": "2hr"
+            },
+            "tuesday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "6:00pm",
+                "slot_duration": "2hr"
+            },
+            "wednesday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "9:00pm",
+                "slot_duration": "2hr"
+            },
+            "thursday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "9:00pm",
+                "slot_duration": "2hr"
+            },
+            "friday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "5:00pm",
+                "slot_duration": "2hr"
+            },
+            "saturday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "9:00pm",
+                "slot_duration": "2hr"
+            },
+            "sunday": {
+                "tables": 2,
+                "start_time": "11:00am",
+                "end_time": "6:00pm",
+                "slot_duration": "2hr"
+            }
+        }
+    }
+}
