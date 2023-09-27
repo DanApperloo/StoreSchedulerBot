@@ -8,11 +8,12 @@ from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
 
 import discord
-from discord.ext import commands
 
-from model.schedule_config import ScheduleConfig
+from cogs.util import Restriction
+from model.schedule_config import ScheduleConfig, DEFAULT_CONFIG
 from util.date import DateTranslator
 from core.bot_core import ScheduleBot
+from core.util import Channel
 
 ########################################################################################################################
 # Bot Configuration and Initialization
@@ -21,7 +22,7 @@ parser = argparse.ArgumentParser()
 group = parser.add_argument_group()
 group.add_argument('-e', '--env', dest='env', default='.env',
                    help="Environment file for dotenv")
-group.add_argument('-s', '--store', dest='store', default='default.store',
+group.add_argument('-s', '--store', dest='store', default=DEFAULT_CONFIG,
                    help="Json file for Store Config")
 cmd_args = parser.parse_args()
 
@@ -75,7 +76,6 @@ async def load_extensions(bot: ScheduleBot):
 
 async def main():
     bot = ScheduleBot(command_prefix='!', intents=intents)
-    bot.remove_command('help')
 
     @bot.event
     async def on_guild_join(guild: discord.Guild):
@@ -99,43 +99,20 @@ async def main():
                 print(f'Unexpected Server {guild.name}:{guild.id}, disconnecting.')
                 await guild.leave()
 
-        await bot.initialize_direct_channels()
-        # Register Slash commands in the valid guilds
+        # Translate Channels and Internal Caches
+        await bot.translate_config()
+        await bot.regenerate_schedule_cache()
+
+        # Configure Cog Restrictions
+        Restriction.set_admin(bot.admins)
+        Restriction.set_channel(Channel.SCHEDULE_ADMIN, bot.admin_channel)
+        Restriction.set_channel(Channel.SCHEDULE_REQUEST, bot.request_channel)
+
+        # Sync Slash Commands
         await bot.tree.sync(guild=discord.Object(id=bot.GUILD_ID))
+
+        # Start Command Processing
         bot.unpause_cogs.set()
-
-    @bot.command(name="list", aliases=["ls", "help"])
-    async def list_commands(ctx: commands.Context, _=None):
-        header = "### General Commands"
-        public_commands = [
-            "**!list** - List Commands",
-            "**!request** - Request a Table Slot",
-            "**!cancel** - Cancel a Table Slot"
-        ]
-        footer = "Use \"!<command> -h\" for per-command help."
-
-        if not bot.is_admin_user(ctx.author.name):
-            await ctx.send(
-                header + '\n' + '\n'.join(public_commands) + '\n\n' + footer
-            )
-            return
-
-        admin_header = "### Admin Commands"
-        admin_commands = [
-            "**!accept** - Accept an Admin Request",
-            "**!add** - Add a Table Slot reservation",
-            "**!remove** - Remove a Table Slot reservation",
-            "**!open** - Open a Schedule",
-            "**!close**- Close a Schedule",
-            "**!clean** - Delete a Schedule",
-            "**!nightly** - Manually nightly Schedule maintenance"
-        ]
-
-        await ctx.send(
-            content=header + '\n' + '\n'.join(public_commands) + '\n\n' + admin_header + '\n' + '\n'.join(
-                    admin_commands) + '\n\n' + footer,
-            delete_after=60  # Delete after 60s
-        )
 
     await load_extensions(bot)
     await bot.start(bot.TOKEN)

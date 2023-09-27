@@ -1,18 +1,41 @@
 import json
 import datetime
+import typing
 from functools import partial
 
 from pytz import timezone
 
+import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 
-from util.date import DateTranslator, CommonDate
 from core.bot_core import ScheduleBot
-from core.bot_util import *
+from core.util import (
+    Channel,
+    timeslot_is_free,
+    timeslot_mark_as_free,
+    timeslot_is_owned_by_author,
+    timeslot_mark_as_owned
+)
+from cogs.util import (
+    Slash,
+    Prefix,
+    ValidationError,
+    DateConverter,
+    TimeConverter,
+    SlotRangeConverter,
+    DateTransformer,
+    TimeTransformer,
+    SlotRangeTransformer,
+    DateCompleter,
+    TimeCompleter)
 from model.schedule import ScheduleSlotRange
 from model.schedule_config import ScheduleConfig
+from util.date import DateTranslator, CommonDate
+from util.time import MeridiemTime
 
 
+@app_commands.guild_only()
 class SlotManager(commands.Cog):
     def __init__(self, bot: ScheduleBot):
         self.bot: ScheduleBot = bot
@@ -46,11 +69,9 @@ class SlotManager(commands.Cog):
                     f'\tSee {self.bot.readonly_channel.mention} for available times and confirmation of your request.')
 
     @commands.command(name="weekly")
-    async def prefix_command_weekly(self, ctx: commands.Context, *_):
-        if not self.bot.is_admin_user(ctx.author.name):
-            await ctx.send("Slot Request reminder can only be issued by Store staff.")
-            return
-
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def prefix_command_weekly(self, *_):
         await self.weekly()
 
     @tasks.loop(time=datetime.time(hour=1))  # Time is updated based on Config in Constructor
@@ -62,22 +83,20 @@ class SlotManager(commands.Cog):
     async def before_weekly_task(self):
         await self.bot.wait_until_ready()
 
-    async def request(self,
-                      ctx: commands.Context,
-                      date: CommonDate,
-                      timeslot_range: ScheduleSlotRange,
-                      opponent: discord.Member):
+    async def request_validate(self,
+                               date: CommonDate,
+                               timeslot_range: ScheduleSlotRange):
         bound_schedule = await self.bot.find_bound_schedule(date, opened=True)
         if not bound_schedule:
-            await ctx.send(f'Cannot request timeslot on Closed Schedule.\n'
-                           f'See {self.bot.readonly_channel.mention} for available times.')
-            return
+            raise ValidationError(
+                f'Cannot request timeslot on Closed Schedule.\n'
+                f'See {self.bot.readonly_channel.mention} for available times.')
 
         try:
             timeslot_range = bound_schedule.schedule.qualify_slotrange(timeslot_range)
         except ValueError:
-            await ctx.send(f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.")
-            return
+            raise ValidationError(
+                f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.")
 
         # Must check if those timeslots are free
         free_slots = [
@@ -86,74 +105,85 @@ class SlotManager(commands.Cog):
             for table in bound_schedule.schedule.tables.values()
         ]
         if not any(free_slots):
-            await ctx.send(f'Timeslot is occupied for all Table on Schedule {str(date)}.\n'
-                           f'See {self.bot.readonly_channel.mention} for available times.')
-            return
+            raise ValidationError(
+                f'Timeslot is occupied for all Table on Schedule {str(date)}.\n'
+                f'See {self.bot.readonly_channel.mention} for available times.')
 
+    async def request_issue(self,
+                            message: discord.Message,
+                            author: discord.Member,
+                            date: CommonDate,
+                            timeslot_range: ScheduleSlotRange,
+                            opponent: discord.Member):
+        # Forward Request to Admins
         await self.bot.admin_channel.send(
-            f'## **Request** from **{ctx.author.name}'
-            f'{" (aka. {})".format(ctx.author.nick) if ctx.author.nick else ""}**\n'
+            f'## **Request** from **{author.display_name}**\n'
             f'Date: {str(date)}\n'
             f'Time: {str(timeslot_range)}\n'
-            f'Opponent: {"{} ({})".format(opponent.nick, opponent.name) if opponent else ""}'
+            f'Opponent: {"{}".format(opponent.display_name) if opponent else ""}'
         )
         data_message = await self.bot.data_channel.send(
             '{\n\t"action": "request",\n'
-            f'\t"name": "{ctx.author.name}",\n'
+            f'\t"name": "{author.name}",\n'
             f'\t"date": "{str(date)}",\n'
             f'\t"time": "{str(timeslot_range)}",\n'
             f'\t"opponent": "{opponent.name if opponent else ""}",\n'
             '\t"admin": {\n'
-            f'\t\t"source_c_id": "{ctx.channel.id}",\n'
-            f'\t\t"source_m_id": "{ctx.message.id}",\n'
-            f'\t\t"author_id": "{ctx.author.id}",\n'
+            f'\t\t"source_c_id": "{message.channel.id}",\n'
+            f'\t\t"source_m_id": "{message.id}",\n'
+            f'\t\t"author_id": "{author.id}",\n'
             f'\t\t"opponent_id": "{opponent.id if opponent else ""}"\n'
             '\t}\n'
             "}")
         await self.bot.admin_channel.send(f'req_id: {data_message.id}')
 
-    async def cancel(self,
-                     ctx: commands.Context,
-                     date: CommonDate,
-                     timeslot_range: ScheduleSlotRange):
+    async def cancel_validate(self,
+                              author: discord.Member,
+                              date: CommonDate,
+                              timeslot_range: ScheduleSlotRange):
         bound_schedule = await self.bot.find_bound_schedule(date, opened=True)
         if not bound_schedule:
-            await ctx.send(f'Cannot request timeslot on Closed Schedule.\n'
-                           f'See {self.bot.readonly_channel.mention} for available times.')
-            return
+            raise ValidationError(
+                f'Cannot request timeslot on Closed Schedule.\n'
+                f'See {self.bot.readonly_channel.mention} for available times.')
 
         try:
             timeslot_range = bound_schedule.schedule.qualify_slotrange(timeslot_range)
         except ValueError:
-            await ctx.send(f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.")
-            return
+            raise ValidationError(
+                f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.")
 
         # Must check if those timeslots are owned
         owned_tables = [
             table.check(timeslot_range,
-                        partial(timeslot_is_owned_by_author, ctx.author, None))
+                        partial(timeslot_is_owned_by_author, author, None))
             for table in bound_schedule.schedule.tables.values()
         ]
         if not any(owned_tables):
-            await ctx.send(f'Timeslot Range {timeslot_range} is not all owned by requestor for {str(date)}.\n'
-                           f'See {self.bot.readonly_channel.mention} for allocated times.')
-            return
+            raise ValidationError(
+                f'Timeslot Range {timeslot_range} is not all owned by requestor for {str(date)}.\n'
+                f'See {self.bot.readonly_channel.mention} for allocated times.')
 
+    async def cancel_issue(self,
+                           message: discord.Message,
+                           author: discord.Member,
+                           date: CommonDate,
+                           timeslot_range: ScheduleSlotRange):
+        # Forward Request to Admins
         await self.bot.admin_channel.send(
-            f'## **Cancel** from **{ctx.author.name}'
-            f'{" (aka. {})".format(ctx.author.nick) if ctx.author.nick else ""}**\n'
+            f'## **Cancel** from **{author.display_name}**\n'
             f'Date: {str(date)}\n'
             f'Time: {str(timeslot_range)}'
         )
         data_message = await self.bot.data_channel.send(
             '{\n\t"action": "cancel",\n'
-            f'\t"name": "{ctx.author.name}",\n'
+            f'\t"name": "{author.name}",\n'
             f'\t"date": "{str(date)}",\n'
             f'\t"time": "{str(timeslot_range)}",\n'
             '\t"admin": {\n'
-            f'\t\t"source_c_id": "{ctx.channel.id}",\n'
-            f'\t\t"source_m_id": "{ctx.message.id}",\n'
-            f'\t\t"author_id": "{ctx.author.id}"\n'
+            f'\t\t"source_c_id": "{message.channel.id}",\n'
+            f'\t\t"source_m_id": "{message.id}",\n'
+            f'\t\t"author_id": "{author.id}"\n'
             '\t}\n'
             '}')
         await self.bot.admin_channel.send(f'req_id: {data_message.id}')
@@ -214,7 +244,7 @@ class SlotManager(commands.Cog):
             if any(already_owned_slots):
                 owned_table = bound_schedule.schedule.tables[[i for i, x in enumerate(already_owned_slots) if x][0] + 1]
                 await ctx.send(
-                    f'Timeslot is already owned by {author.nick} ({author.name}) '
+                    f'Timeslot is already owned by {author.display_name} '
                     f'on Table {owned_table.number} for Schedule {str(date)}')
                 return
 
@@ -353,248 +383,189 @@ class SlotManager(commands.Cog):
             ))
         await ctx.message.add_reaction("👍")
 
+    @app_commands.command(
+        name="request",
+        description="Issues a scheduling request for a Store Table at a given date and time")
+    @app_commands.describe(
+        date="Date or Day to schedule Table",
+        timeslot="hr:m{am/pm} for start of reservation",
+        timeslot_end="hr:m{am/pm} for end of reservation",
+        opponent="(Optional) @mention of Opponent")
+    @app_commands.autocomplete(
+        date=DateCompleter.auto_complete,
+        timeslot=TimeCompleter().auto_complete,
+        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete)
+    @Slash.restricted_channel(Channel.SCHEDULE_REQUEST)
+    async def slash_command_request(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer],
+            timeslot: app_commands.Transform[ScheduleSlotRange, SlotRangeTransformer],
+            timeslot_end: typing.Optional[app_commands.Transform[MeridiemTime, TimeTransformer]] = None,
+            opponent: typing.Optional[discord.Member] = None):
+
+        if timeslot_end and timeslot.is_indeterminate():
+            timeslot.qualify(timeslot_end)
+
+        # Do second level validation
+        await self.request_validate(date, timeslot)
+
+        # Defer to create a response message we can reference
+        await interaction.response.defer(ephemeral=False, thinking=True)
+
+        # Issue the request, then update the response to indicate success
+        await self.request_issue(
+            await interaction.original_response(),
+            interaction.user,
+            date,
+            timeslot,
+            opponent
+        )
+        await interaction.edit_original_response(
+            content=f'{interaction.user.mention} requested: '
+                    f'{DateTranslator.day_from_date(date)} ({date}) '
+                    f'{timeslot} {opponent.mention if opponent else ""}'.strip())
+
     @commands.command(name="request")
-    async def prefix_command_request(self, ctx: commands.Context, *args):
-        # args: Date and Timeslot Range, Player 2 (Mention)
-        if len(args) == 1 and args[0].strip() == '-h':
-            await ctx.send(
-                '\n'.join([
-                    "!request {date:mm/dd/YYYY or Day} {start-timeslot}[-{end-timeslot}] [opponent-mention]\n",
-                    "\tdate: Date or Day to schedule Table",
-                    "\tstart-timeslot: hr:m{am/pm} for Timeslot request",
-                    "\tend-timeslot: (Optional) hr:m{am/pm} for end of Timeslot request (Not included in request).'",
-                    "\t\tWhen not specified, only 1 timeslot will be requested.",
-                    "\topponent-mention: (Optional) @mention of Opponent",
-                    f'\n\tIssues a scheduling request for a Store Table at a given date and time.'
-                ])
-            )
-            return
+    @Prefix.restricted_channel(Channel.SCHEDULE_REQUEST)
+    async def prefix_command_request(
+            self,
+            ctx: commands.Context,
+            date: CommonDate = commands.parameter(converter=DateConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
+            opponent: typing.Optional[discord.Member] = None):
+        # Do second level validation
+        await self.request_validate(date, timeslot_range)
+        await self.request_issue(
+            ctx.message,
+            ctx.author,
+            date,
+            timeslot_range,
+            opponent)
 
-        if len(args) > 3 or len(args) < 2:
-            await ctx.send("Invalid input. See \"!request -h\" for usage.")
-            return
+    @app_commands.command(
+        name="cancel",
+        description="Issues a cancellation request for a Store Table at a given date and time")
+    @app_commands.describe(
+        date="Date or Day to cancel existing Table reservation",
+        timeslot="hr:m{am/pm} for start of reservation",
+        timeslot_end="hr:m{am/pm} for end of reservation")
+    @app_commands.autocomplete(
+        date=DateCompleter.auto_complete,
+        timeslot=TimeCompleter().auto_complete,
+        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete
+    )
+    @Slash.restricted_channel(Channel.SCHEDULE_REQUEST)
+    async def slash_command_cancel(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer],
+            timeslot: app_commands.Transform[ScheduleSlotRange, SlotRangeTransformer],
+            timeslot_end: typing.Optional[app_commands.Transform[MeridiemTime, TimeTransformer]] = None):
 
-        try:
-            date = CommonDate.deserialize(args[0])
-        except ValueError:
-            await ctx.send(
-                f"Invalid date in first parameter, must be in format mm/dd/YYYY or a Day.\n"
-                f"See more by using \"!request -h\"")
-            return
+        if timeslot_end and timeslot.is_indeterminate():
+            timeslot.qualify(timeslot_end)
 
-        try:
-            timeslot_range = ScheduleSlotRange.deserialize(args[1].strip())
-        except ValueError:
-            await ctx.send(
-                f"Invalid timeslot in second parameter, start-timeslot[-end-timeslot].\n"
-                f"See more by using \"!request -h\"")
-            return
+        # Do second level validation
+        await self.cancel_validate(interaction.user, date, timeslot)
 
-        opponent = None
-        if len(args) == 3:
-            raw_opponent_str = args[2].strip()
-            try:
-                opponent = await self.bot.guild.fetch_member(ScheduleBot.convert_mention_to_id(raw_opponent_str))
-                if not opponent:
-                    raise ValueError
+        # Defer to create a response message we can reference
+        await interaction.response.defer(ephemeral=False, thinking=True)
 
-            except ValueError:
-                print(f'Cannot get User ID from {raw_opponent_str}')
-                await ctx.send(f"Opponent mention {raw_opponent_str} is not valid."
-                               f"See usage details by using \"!request -h\"")
-                return
-        # End Raw Input Validation
-
-        await self.request(ctx, date, timeslot_range, opponent)
+        # Issue the request, then update the response to indicate success
+        await self.cancel_issue(
+            await interaction.original_response(),
+            interaction.user,
+            date,
+            timeslot
+        )
+        await interaction.edit_original_response(
+            content=f'{interaction.user.mention} cancelled: '
+                    f'{DateTranslator.day_from_date(date)} ({date}) '
+                    f'{timeslot}')
 
     @commands.command(name="cancel")
-    async def prefix_command_cancel(self, ctx: commands.Context, *args):
-        # args: Date and Timeslot Range
-        if len(args) == 1 and args[0].strip() == '-h':
-            await ctx.send(
-                '\n'.join([
-                    "!cancel {date:mm/dd/YYYY or Day} {start-timeslot}[-{end-timeslot}]\n",
-                    "\tdate: Date or Day to cancel request",
-                    "\tstart-timeslot: hr:m{am/pm} for cancel request",
-                    "\tend-timeslot: (Optional) hr:m{am/pm} for end of cancel request (Not included in request).'",
-                    "\t\tWhen not specified, only 1 timeslot will be canceled.",
-                    f'\n\tIssues a scheduling request for a Store Table at a given date and time.'
-                ])
-            )
-            return
-
-        if len(args) != 2:
-            await ctx.send("Invalid input. See \"!cancel -h\" for usage.")
-            return
-
-        try:
-            date = CommonDate.deserialize(args[0])
-        except ValueError:
-            await ctx.send(
-                f"Invalid date in first parameter, must be in format mm/dd/YYYY or a Day.\n"
-                f"See more by using \"!cancel -h\"")
-            return
-
-        try:
-            timeslot_range = ScheduleSlotRange.deserialize(args[1].strip())
-        except ValueError:
-            await ctx.send(
-                f"Invalid timeslot in second parameter, start-timeslot[-end-timeslot].\n"
-                f"See more by using \"!cancel -h\"")
-            return
-        # End Raw Input Validation
-
-        await self.cancel(ctx, date, timeslot_range)
+    @Prefix.restricted_channel(Channel.SCHEDULE_REQUEST)
+    async def prefix_command_cancel(
+            self,
+            ctx: commands.Context,
+            date: CommonDate = commands.parameter(converter=DateConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter)):
+        # Do second level validation
+        await self.cancel_validate(ctx.author, date, timeslot_range)
+        await self.cancel_issue(
+            ctx.message,
+            ctx.author,
+            date,
+            timeslot_range)
 
     @commands.command(name='accept')
-    async def prefix_command_accept(self, ctx: commands.Context, *args):
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def prefix_command_accept(
+            self,
+            ctx: commands.Context,
+            _: typing.Optional[typing.Literal['req_id:']] = None,
+            data_id: int = None):
         # args: req_id
-        if not self.bot.is_admin_user(ctx.author.name):
-            await ctx.send("Schedule confirmation can only be issued by Store staff.")
-            return
-
-        if len(args) == 1 and args[0].strip() == '-h':
-            await ctx.send(
-                '\n'.join([
-                    "!accept [req_id:] {req_id}\n",
-                    "\treq_id: Discord Message ID of Bot Data message",
-                    f'\n\tAccepts a scheduling request or cancellation for a Store Table at a given date and time.'
-                ])
-            )
-            return
-
-        if len(args) != 1 and len(args) != 2:
-            await ctx.send("Invalid input. See \"!accept -h\" for usage.")
-            return
-
-        if len(args) == 2:
-            if args[0].lower() == 'req_id:':
-                data_id = args[1]
-            else:
-                await ctx.send("Invalid input. See \"!accept -h\" for usage.")
-                return
-        else:
-            data_id = args[0]
-        # End Raw Input Validation
-
         await self.accept(ctx, data_id)
 
     @commands.command(name="add")
-    async def prefix_command_add(self, ctx: commands.Context, *args):
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def prefix_command_add(
+            self,
+            ctx: commands.Context,
+            date: CommonDate = commands.parameter(converter=DateConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
+            author: discord.Member = None,
+            opponent: typing.Optional[discord.Member] = None):
         # args: Date and Timeslot Range, Player 1 (Name), [Player 2 (Name)]
-        if not self.bot.is_admin_user(ctx.author.name):
-            await ctx.send("Schedule can only be modified directly by Store staff.")
-            return
-
-        if len(args) == 1 and args[0].strip() == '-h':
-            await ctx.send(
-                '\n'.join([
-                    "!add {date:mm/dd/YYYY or Day} {start-timeslot}[-{end-timeslot}] {user-name} [opponent-name]\n",
-                    "\tdate: Date or Day to schedule Table",
-                    "\tstart-timeslot: hr:m{am/pm} for Timeslot request",
-                    "\tend-timeslot: (Optional) hr:m{am/pm} for end of Timeslot request (Not included in request).'",
-                    "\t\tWhen not specified, only 1 timeslot will be requested.",
-                    "\tuser-name: Name (not nickname) of Requester",
-                    "\topponent-name: Name (not nickname) of Opponent",
-                    f'\n\tIssues a scheduling request for a Store Table at a given date and time.'
-                ])
-            )
-            return
-
-        try:
-            date = CommonDate.deserialize(args[0])
-        except ValueError:
-            await ctx.send(
-                f"Invalid date in first parameter, must be in format mm/dd/YYYY or a Day.\n"
-                f"See more by using \"!add -h\"")
-            return
-
-        try:
-            timeslot_range = ScheduleSlotRange.deserialize(args[1].strip())
-        except ValueError:
-            await ctx.send(
-                f"Invalid timeslot in second parameter, start-timeslot[-end-timeslot].\n"
-                f"See more by using \"!add -h\"")
-            return
-
-        members = [member async for member in self.bot.guild.fetch_members()]
-        author = discord.utils.get(members, name=args[2].strip())
-
-        opponent = None
-        if len(args) == 4:
-            raw_opponent_str = args[3].strip()
-            try:
-                opponent = discord.utils.get(members, name=raw_opponent_str)
-                if not opponent:
-                    raise ValueError
-
-            except ValueError:
-                print(f'Cannot get User ID from {raw_opponent_str}')
-                await ctx.send(f"Opponent mention {raw_opponent_str} is not valid."
-                               f"See usage details by using \"!add -h\"")
-                return
-        # End Raw Input Validation
-
         await self.add(ctx, date, timeslot_range, author, opponent)
 
     @commands.command(name="remove")
-    async def prefix_command_remove(self, ctx: commands.Context, *args):
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def prefix_command_remove(
+            self,
+            ctx: commands.Context,
+            date: CommonDate = commands.parameter(converter=DateConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
+            author: discord.Member = None,
+            opponent: typing.Optional[discord.Member] = None):
         # args: Date, Timeslot Range, Requester, [Opponent]
-        if not self.bot.is_admin_user(ctx.author.name):
-            await ctx.send("Schedule can only be modified directly by Store staff.")
-            return
-
-        if len(args) == 1 and args[0].strip() == '-h':
-            await ctx.send(
-                '\n'.join([
-                    "!add {date:mm/dd/YYYY or Day} {start-timeslot}[-{end-timeslot}] {user-name} [opponent-name]\n",
-                    "\tdate: Date or Day to schedule Table",
-                    "\tstart-timeslot: hr:m{am/pm} for Timeslot request",
-                    "\tend-timeslot: (Optional) hr:m{am/pm} for end of Timeslot request (Not included in request).'",
-                    "\t\tWhen not specified, only 1 timeslot will be requested."
-                    "\tuser-name: Name (not nickname) of Requester",
-                    "\topponent-name: Name (not nickname) of Opponent",
-                    f'\n\tRemoves a scheduling request for a Store Table at a given date and time.'
-                ])
-            )
-            return
-
-        try:
-            date = CommonDate.deserialize(args[0])
-        except ValueError:
-            await ctx.send(
-                f"Invalid date in first parameter, must be in format mm/dd/YYYY or a Day.\n"
-                f"See more by using \"!remove -h\"")
-            return
-
-        try:
-            timeslot_range = ScheduleSlotRange.deserialize(args[1].strip())
-        except ValueError:
-            await ctx.send(
-                f"Invalid timeslot in second parameter, start-timeslot[-end-timeslot].\n"
-                f"See more by using \"!remove -h\"")
-            return
-
-        members = [member async for member in self.bot.guild.fetch_members()]
-        author = discord.utils.get(members, name=args[2].strip())
-
-        opponent = None
-        if len(args) == 4:
-            raw_opponent_str = args[3].strip()
-            try:
-                opponent = discord.utils.get(members, name=raw_opponent_str)
-                if not opponent:
-                    raise ValueError
-
-            except ValueError:
-                print(f'Cannot get User ID from {raw_opponent_str}')
-                await ctx.send(f"Opponent mention {raw_opponent_str} is not valid."
-                               f"See usage details by using \"!remove -h\"")
-                return
-        # End Raw Input Validation
-
         await self.remove(ctx, date, timeslot_range, author, opponent)
+
+    @prefix_command_request.error
+    @prefix_command_cancel.error
+    @prefix_command_accept.error
+    @prefix_command_add.error
+    @prefix_command_remove.error
+    @prefix_command_weekly.error
+    async def error_prefix_command(self, ctx: commands.Context, error):
+        if isinstance(error, Prefix.RestrictionError) or \
+                isinstance(error, commands.BadArgument) or \
+                isinstance(error, ValidationError):
+            await ctx.send(str(error))
+        else:
+            raise error
+
+    @slash_command_request.error
+    @slash_command_cancel.error
+    async def error_slash_command(self, interaction: discord.Interaction, error):
+        if isinstance(error, Slash.RestrictionError) or \
+                isinstance(error, app_commands.TransformerError) or \
+                isinstance(error, ValidationError):
+            if not interaction.response.is_done():
+                await interaction.response.send_message(str(error), ephemeral=True)
+            else:
+                await interaction.edit_original_response(
+                    content=f'Unable to issue {interaction.command.name} with {str(interaction.command.data)}.\n'
+                            f'Please report failure to an administrator.')
+                print(f'{str(error)}')
+        else:
+            raise error
 
 
 async def setup(bot):
-    await bot.add_cog(SlotManager(bot))
+    await bot.add_cog(SlotManager(bot), guild=discord.Object(id=bot.GUILD_ID))

@@ -47,33 +47,65 @@ class ScheduleBot(commands.Bot):
         self.SCHEDULE_ADMIN_CHANNEL_ID = int(os.getenv('SCHEDULE_ADMIN_CHANNEL_ID').strip())
         self.SCHEDULE_DATA_CHANNEL_ID = int(os.getenv('SCHEDULE_DATA_CHANNEL_ID').strip())
         self.SCHEDULE_REQUEST_CHANNEL_ID = int(os.getenv('SCHEDULE_REQUEST_CHANNEL_ID').strip())
-        self.ADMIN_USERS = os.getenv('ADMIN_USERS').strip().split(',')
+        self.ADMIN_USER_IDS = [int(x) for x in os.getenv('ADMIN_USER_IDS').strip().split(',') if x]
 
         self.readonly_channel: typing.Union[discord.TextChannel, None] = None
         self.admin_channel: typing.Union[discord.TextChannel, None] = None
         self.data_channel: typing.Union[discord.TextChannel, None] = None
         self.request_channel: typing.Union[discord.TextChannel, None] = None
+        self.admins: typing.Union[list[discord.Member], None] = []
+
+        self._schedule_cache = dict()
 
         self.unpause_cogs = asyncio.Event()
 
         self.initialized = True
 
-    async def initialize_direct_channels(self):
+    async def translate_config(self):
+        print(f'Connecting to channel {self.SCHEDULE_READONLY_CHANNEL_ID}')
         self.readonly_channel = await self.fetch_channel(self.SCHEDULE_READONLY_CHANNEL_ID)
-        print(f'Connecting to channel {self.readonly_channel.name}:{self.readonly_channel.id}')
+        print(f'Connected to channel {self.readonly_channel.name}:{self.readonly_channel.id}')
+        print(f'Connecting to channel {self.SCHEDULE_ADMIN_CHANNEL_ID}')
         self.admin_channel = await self.fetch_channel(self.SCHEDULE_ADMIN_CHANNEL_ID)
-        print(f'Connecting to channel {self.admin_channel.name}:{self.admin_channel.id}')
+        print(f'Connected to channel {self.admin_channel.name}:{self.admin_channel.id}')
+        print(f'Connecting to channel {self.SCHEDULE_DATA_CHANNEL_ID}')
         self.data_channel = await self.fetch_channel(self.SCHEDULE_DATA_CHANNEL_ID)
-        print(f'Connecting to channel {self.data_channel.name}:{self.data_channel.id}')
+        print(f'Connected to channel {self.data_channel.name}:{self.data_channel.id}')
+        print(f'Connecting to channel {self.SCHEDULE_REQUEST_CHANNEL_ID}')
         self.request_channel = await self.fetch_channel(self.SCHEDULE_REQUEST_CHANNEL_ID)
-        print(f'Connecting to channel {self.request_channel.name}:{self.request_channel.id}')
+        print(f'Connected to channel {self.request_channel.name}:{self.request_channel.id}')
+        for admin_id in self.ADMIN_USER_IDS:
+            try:
+                member = await self.guild.fetch_member(admin_id)
+            except discord.NotFound:
+                print(f'Could not find admin with ID {admin_id}')
+                continue
+            self.admins.append(member)
 
     @property
-    def guild(self):
+    def guild(self) -> discord.Guild:
         return self.guilds[0]
 
-    def is_admin_user(self, user: str) -> bool:
-        return user in self.ADMIN_USERS
+    @property
+    def schedule_cache(self) -> dict[str, Schedule]:
+        return self._schedule_cache
+
+    async def regenerate_schedule_cache(self):
+        async def _cache(
+                _message: discord.Message,
+                _schedule: Schedule):
+            key = str(_schedule.date)
+            if key not in self.schedule_cache:
+                print(f'Cached schedule {_schedule.day} - {str(_schedule.date)}')
+                self.schedule_cache[key] = _schedule
+            elif str(_schedule) != str(self.schedule_cache[key]):
+                print(f'Updated cached schedule {_schedule.day} - {str(_schedule.date)}')
+                self.schedule_cache[key] = _schedule
+
+        await self.process_schedules(_cache)
+
+    def is_admin_user(self, _id: int) -> bool:
+        return _id in self.ADMIN_USER_IDS
 
     @staticmethod
     def convert_mention_to_id(mention: str) -> int:

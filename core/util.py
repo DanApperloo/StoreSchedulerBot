@@ -1,8 +1,16 @@
+import enum
 import typing
 
 import discord
 
 from model.schedule import ScheduleSlot
+
+
+class Channel(enum.Enum):
+    SCHEDULE_READONLY = enum.auto()
+    SCHEDULE_ADMIN = enum.auto()
+    SCHEDULE_DATA = enum.auto()
+    SCHEDULE_REQUEST = enum.auto()
 
 
 def timeslot_is_owned_by_author(_author: discord.Member,
