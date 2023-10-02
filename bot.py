@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
 
 import discord
+from discord.ext import commands
 
-from cogs.util import Restriction
+from cogs.util import Restriction, Prefix
 from model.schedule_config import ScheduleConfig, DEFAULT_CONFIG
 from util.date import DateTranslator
 from core.bot_core import ScheduleBot
@@ -108,11 +109,16 @@ async def main():
         Restriction.set_channel(Channel.SCHEDULE_ADMIN, bot.admin_channel)
         Restriction.set_channel(Channel.SCHEDULE_REQUEST, bot.request_channel)
 
-        # Sync Slash Commands
-        await bot.tree.sync(guild=discord.Object(id=bot.GUILD_ID))
-
         # Start Command Processing
         bot.unpause_cogs.set()
+
+    @bot.command(name="sync")
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def sync(ctx: commands.Context):
+        # Sync Slash Commands
+        await bot.tree.sync(guild=discord.Object(id=bot.GUILD_ID))
+        await ctx.message.add_reaction("👍")
 
     await load_extensions(bot)
     await bot.start(bot.TOKEN)
