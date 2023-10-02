@@ -1,5 +1,6 @@
 import json
 import datetime
+import re
 import typing
 from functools import partial
 
@@ -27,6 +28,7 @@ from cogs.util import (
     DateTransformer,
     TimeTransformer,
     SlotRangeTransformer,
+    DataIdTransformer,
     DateCompleter,
     TimeCompleter)
 from model.schedule import ScheduleSlotRange
@@ -54,8 +56,21 @@ class SlotManager(commands.Cog):
             self.weekly_task.change_interval(time=weekly_time)
             self.weekly_task.start()
 
+        # Context Menus must be handled manually
+        self.accept_ctx_menu = app_commands.ContextMenu(
+            name='Accept',
+            callback=self.context_command_accept,
+            guild_ids=[self.bot.GUILD_ID]
+        )
+        self.accept_ctx_menu.error(self.error_slash_command)
+        self.bot.tree.add_command(self.accept_ctx_menu)
+
     def cog_unload(self) -> None:
         self.weekly_task.cancel()
+        # Context Menus must be handled manually
+        self.bot.tree.remove_command(
+            self.accept_ctx_menu.name,
+            type=self.accept_ctx_menu.type)
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -115,13 +130,7 @@ class SlotManager(commands.Cog):
                             date: CommonDate,
                             timeslot_range: ScheduleSlotRange,
                             opponent: discord.Member):
-        # Forward Request to Admins
-        await self.bot.admin_channel.send(
-            f'## **Request** from **{author.display_name}**\n'
-            f'Date: {str(date)}\n'
-            f'Time: {str(timeslot_range)}\n'
-            f'Opponent: {"{}".format(opponent.display_name) if opponent else ""}'
-        )
+        # Store easily parsable blob in the Bot Data channel
         data_message = await self.bot.data_channel.send(
             '{\n\t"action": "request",\n'
             f'\t"name": "{author.name}",\n'
@@ -135,6 +144,15 @@ class SlotManager(commands.Cog):
             f'\t\t"opponent_id": "{opponent.id if opponent else ""}"\n'
             '\t}\n'
             "}")
+        # Forward Request to Admins
+        await self.bot.admin_channel.send(
+            f'## **Request** from **{author.display_name}**\n'
+            f'req_id: {data_message.id}\n'
+            f'Date: {str(date)}\n'
+            f'Time: {str(timeslot_range)}\n'
+            f'Opponent: {"{}".format(opponent.display_name) if opponent else ""}'
+        )
+        # Add a message with the req_id only, to facilitate mobile copy-paste input
         await self.bot.admin_channel.send(f'req_id: {data_message.id}')
 
     async def cancel_validate(self,
@@ -169,12 +187,7 @@ class SlotManager(commands.Cog):
                            author: discord.Member,
                            date: CommonDate,
                            timeslot_range: ScheduleSlotRange):
-        # Forward Request to Admins
-        await self.bot.admin_channel.send(
-            f'## **Cancel** from **{author.display_name}**\n'
-            f'Date: {str(date)}\n'
-            f'Time: {str(timeslot_range)}'
-        )
+        # Store easily parsable blob in the Bot Data channel
         data_message = await self.bot.data_channel.send(
             '{\n\t"action": "cancel",\n'
             f'\t"name": "{author.name}",\n'
@@ -186,33 +199,36 @@ class SlotManager(commands.Cog):
             f'\t\t"author_id": "{author.id}"\n'
             '\t}\n'
             '}')
+        # Forward Request to Admins
+        await self.bot.admin_channel.send(
+            f'## **Cancel** from **{author.display_name}**\n'
+            f'req_id: {data_message.id}\n'
+            f'Date: {str(date)}\n'
+            f'Time: {str(timeslot_range)}'
+        )
+        # Add a message with the req_id only, to facilitate mobile copy-paste input
         await self.bot.admin_channel.send(f'req_id: {data_message.id}')
 
     async def accept(self,
-                     ctx: commands.Context,
                      data_id: int):
         data_message = await self.bot.data_channel.fetch_message(data_id)
         if not data_message:
-            await ctx.send("Original bot data is no longer valid.")
-            return
+            raise ValidationError("Original bot data is no longer valid.")
 
         request = json.loads(data_message.content)
         action = request['action']
         if action != "request" and action != "cancel":
-            await ctx.send("Invalid req_id for action")
-            return
+            raise ValidationError("Invalid req_id for action")
 
         try:
             date = CommonDate.deserialize(request['date'])
         except ValueError:
-            await ctx.send("Invalid date for action")
-            return
+            raise ValidationError("Invalid date for action")
 
         try:
             times = ScheduleSlotRange.deserialize(request['time'])
         except ValueError:
-            await ctx.send("Invalid time for action")
-            return
+            raise ValidationError("Invalid time for action")
 
         source_channel = await self.bot.fetch_channel(request['admin']['source_c_id'])
         source_message = await source_channel.fetch_message(request['admin']['source_m_id'])
@@ -232,8 +248,7 @@ class SlotManager(commands.Cog):
         # Must check if those timeslots are free
         bound_schedule = await self.bot.find_bound_schedule(date, opened=True)
         if not bound_schedule:
-            await ctx.send(f'Cannot modify timeslot on Closed Schedule.')
-            return
+            raise ValidationError(f'Cannot modify timeslot on Closed Schedule.')
 
         if action == "request":
             already_owned_slots = [
@@ -243,10 +258,9 @@ class SlotManager(commands.Cog):
             ]
             if any(already_owned_slots):
                 owned_table = bound_schedule.schedule.tables[[i for i, x in enumerate(already_owned_slots) if x][0] + 1]
-                await ctx.send(
+                raise ValidationError(
                     f'Timeslot is already owned by {author.display_name} '
                     f'on Table {owned_table.number} for Schedule {str(date)}')
-                return
 
             free_slots = [
                 table.check(times,
@@ -254,8 +268,8 @@ class SlotManager(commands.Cog):
                 for table in bound_schedule.schedule.tables.values()
             ]
             if not any(free_slots):
-                await ctx.send(f'Timeslot has since been occupied for all Tables on Schedule {str(date)}')
-                return
+                raise ValidationError(
+                    f'Timeslot has since been occupied for all Tables on Schedule {str(date)}')
 
             # Mark requested slots as owned by player and opponent
             free_table = bound_schedule.schedule.tables[[i for i, x in enumerate(free_slots) if x][0] + 1]
@@ -267,7 +281,6 @@ class SlotManager(commands.Cog):
                     str(bound_schedule.schedule),
                     self.bot.ESCAPE_TOKEN
                 ))
-            await ctx.message.add_reaction("👍")
 
             if source_message:
                 await source_message.reply(
@@ -280,8 +293,8 @@ class SlotManager(commands.Cog):
                 for table in bound_schedule.schedule.tables.values()
             ]
             if not any(owned_tables):
-                await ctx.send(f'Timeslot Range {times} is no longer owned by requestor for {str(date)})')
-                return
+                raise ValidationError(
+                    f'Timeslot Range {times} is no longer owned by requestor for {str(date)})')
 
             # Remove ownership from timeslot range
             owned_table = bound_schedule.schedule.tables[[i for i, x in enumerate(owned_tables) if x][0] + 1]
@@ -293,30 +306,27 @@ class SlotManager(commands.Cog):
                     str(bound_schedule.schedule),
                     self.bot.ESCAPE_TOKEN
                 ))
-            await ctx.message.add_reaction("👍")
 
             if source_message:
                 await source_message.reply(
                     f'Store cancelled request for {str(date)} {times} from Table {owned_table.number}')
 
     async def add(self,
-                  ctx: commands.Context,
                   date: CommonDate,
                   timeslot_range: ScheduleSlotRange,
                   author: discord.Member,
                   opponent: discord.Member):
         bound_schedule = await self.bot.find_bound_schedule(date, opened=True)
         if not bound_schedule:
-            await ctx.send(f'Cannot request timeslot on Closed Schedule.\n'
-                           f'See {self.bot.readonly_channel.mention} for available times.')
-            return
+            raise ValidationError(
+                f'Cannot request timeslot on Closed Schedule.\n'
+                f'See {self.bot.readonly_channel.mention} for available times.')
 
         try:
             timeslot_range = bound_schedule.schedule.qualify_slotrange(timeslot_range)
         except ValueError:
-            await ctx.send(f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.\n"
-                           f"See usage details by using \"!add -h\"")
-            return
+            raise ValidationError(
+                f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots")
 
         # Must check if those timeslots are free
         free_slots = [
@@ -325,9 +335,9 @@ class SlotManager(commands.Cog):
             for table in bound_schedule.schedule.tables.values()
         ]
         if not any(free_slots):
-            await ctx.send(f'Timeslot is occupied for all Table on Schedule {str(date)}.\n'
-                           f'See {self.bot.readonly_channel.mention} for available times.')
-            return
+            raise ValidationError(
+                f'Timeslot is occupied for all Table on Schedule {str(date)}.\n'
+                f'See {self.bot.readonly_channel.mention} for available times.')
 
         # Mark requested slots as owned by player and opponent
         free_table = bound_schedule.schedule.tables[[i for i, x in enumerate(free_slots) if x][0] + 1]
@@ -339,26 +349,23 @@ class SlotManager(commands.Cog):
                 str(bound_schedule.schedule),
                 self.bot.ESCAPE_TOKEN
             ))
-        await ctx.message.add_reaction("👍")
 
     async def remove(self,
-                     ctx: commands.Context,
                      date: CommonDate,
                      timeslot_range: ScheduleSlotRange,
                      author: discord.Member,
                      opponent: discord.Member):
         bound_schedule = await self.bot.find_bound_schedule(date, opened=True)
         if not bound_schedule:
-            await ctx.send(f'Cannot request timeslot on Closed Schedule.\n'
-                           f'See {self.bot.readonly_channel.mention} for available times.')
-            return
+            raise ValidationError(
+                f'Cannot request timeslot on Closed Schedule.\n'
+                f'See {self.bot.readonly_channel.mention} for available times.')
 
         try:
             timeslot_range = bound_schedule.schedule.qualify_slotrange(timeslot_range)
         except ValueError:
-            await ctx.send(f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.\n"
-                           f"See usage details by using \"!remove -h\"")
-            return
+            raise ValidationError(
+                f"Invalid timeslot range, see {self.bot.readonly_channel.mention} for valid timeslots.\n")
 
         # Must check if those timeslots are owned
         owned_tables = [
@@ -367,9 +374,9 @@ class SlotManager(commands.Cog):
             for table in bound_schedule.schedule.tables.values()
         ]
         if not any(owned_tables):
-            await ctx.send(f'Timeslot Range {timeslot_range} is not all owned by requestor for {str(date)}.\n'
-                           f'See {self.bot.readonly_channel.mention} for allocated times.')
-            return
+            raise ValidationError(
+                f'Timeslot Range {timeslot_range} is not all owned by requestor for {str(date)}.\n'
+                f'See {self.bot.readonly_channel.mention} for allocated times.')
 
         # Remove ownership from timeslot range
         owned_table = bound_schedule.schedule.tables[[i for i, x in enumerate(owned_tables) if x][0] + 1]
@@ -381,7 +388,6 @@ class SlotManager(commands.Cog):
                 str(bound_schedule.schedule),
                 self.bot.ESCAPE_TOKEN
             ))
-        await ctx.message.add_reaction("👍")
 
     @app_commands.command(
         name="request",
@@ -499,6 +505,36 @@ class SlotManager(commands.Cog):
             date,
             timeslot_range)
 
+    @app_commands.command(
+        name="accept",
+        description="Accepts a scheduling request or cancellation for a Table at a given date and time.")
+    @app_commands.describe(
+        data_id="Request/Cancellation req_id (can include \"req_id: \" from copy-paste")
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_accept(
+            self,
+            interaction: discord.Interaction,
+            data_id: app_commands.Transform[int, DataIdTransformer("req_id: ")]):
+        await self.accept(data_id)
+        await interaction.response.send_message(
+            f'{interaction.user.mention} accepted: {data_id}')
+
+    @Slash.admin_only()
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def context_command_accept(
+            self,
+            interaction: discord.Interaction,
+            message: discord.Message) -> None:
+
+        match = re.search(r'req_id: (\d+)', message.content, flags=re.IGNORECASE)
+        if not match:
+            raise ValidationError('No "req_id: " found in message')
+
+        data_id = int(match.group(1))
+        await self.accept(data_id)
+        await interaction.response.send_message(
+            f'{interaction.user.mention} accepted: {data_id}')
+
     @commands.command(name='accept')
     @Prefix.admin_only()
     @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
@@ -507,8 +543,41 @@ class SlotManager(commands.Cog):
             ctx: commands.Context,
             _: typing.Optional[typing.Literal['req_id:']] = None,
             data_id: int = None):
-        # args: req_id
-        await self.accept(ctx, data_id)
+        await self.accept(data_id)
+        await ctx.message.add_reaction("👍")
+
+    @app_commands.command(
+        name="add",
+        description="Manually add a Store Table usage at a given date and time")
+    @app_commands.describe(
+        date="Date or Day to add Table reservation",
+        timeslot="hr:m{am/pm} for start of reservation",
+        timeslot_end="hr:m{am/pm} for end of reservation")
+    @app_commands.autocomplete(
+        date=DateCompleter.auto_complete,
+        timeslot=TimeCompleter().auto_complete,
+        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete
+    )
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_add(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer],
+            timeslot: app_commands.Transform[ScheduleSlotRange, SlotRangeTransformer],
+            timeslot_end: typing.Optional[app_commands.Transform[MeridiemTime, TimeTransformer]] = None,
+            author: discord.Member = None,
+            opponent: typing.Optional[discord.Member] = None):
+
+        if timeslot_end and timeslot.is_indeterminate():
+            timeslot.qualify(timeslot_end)
+
+        await self.add(date, timeslot, author, opponent)
+
+        await interaction.response.send_message(
+            content=f'{interaction.user.mention} added: '
+                    f'{DateTranslator.day_from_date(date)} ({date}) '
+                    f'{timeslot} for {author.display_name}'
+                    f'{" and {}".format(opponent.display_name if opponent else "")}')
 
     @commands.command(name="add")
     @Prefix.admin_only()
@@ -520,8 +589,41 @@ class SlotManager(commands.Cog):
             timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
             author: discord.Member = None,
             opponent: typing.Optional[discord.Member] = None):
-        # args: Date and Timeslot Range, Player 1 (Name), [Player 2 (Name)]
-        await self.add(ctx, date, timeslot_range, author, opponent)
+        await self.add(date, timeslot_range, author, opponent)
+        await ctx.message.add_reaction("👍")
+
+    @app_commands.command(
+        name="remove",
+        description="Manually remove a Store Table usage at a given date and time")
+    @app_commands.describe(
+        date="Date or Day to add Table reservation",
+        timeslot="hr:m{am/pm} for start of reservation",
+        timeslot_end="hr:m{am/pm} for end of reservation")
+    @app_commands.autocomplete(
+        date=DateCompleter.auto_complete,
+        timeslot=TimeCompleter().auto_complete,
+        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete
+    )
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_remove(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer],
+            timeslot: app_commands.Transform[ScheduleSlotRange, SlotRangeTransformer],
+            timeslot_end: typing.Optional[app_commands.Transform[MeridiemTime, TimeTransformer]] = None,
+            author: discord.Member = None,
+            opponent: typing.Optional[discord.Member] = None):
+
+        if timeslot_end and timeslot.is_indeterminate():
+            timeslot.qualify(timeslot_end)
+
+        await self.remove(date, timeslot, author, opponent)
+
+        await interaction.response.send_message(
+            content=f'{interaction.user.mention} removed: '
+                    f'{DateTranslator.day_from_date(date)} ({date}) '
+                    f'{timeslot} for {author.display_name}'
+                    f'{" and {}".format(opponent.display_name if opponent else "")}')
 
     @commands.command(name="remove")
     @Prefix.admin_only()
@@ -533,8 +635,8 @@ class SlotManager(commands.Cog):
             timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
             author: discord.Member = None,
             opponent: typing.Optional[discord.Member] = None):
-        # args: Date, Timeslot Range, Requester, [Opponent]
-        await self.remove(ctx, date, timeslot_range, author, opponent)
+        await self.remove(date, timeslot_range, author, opponent)
+        await ctx.message.add_reaction("👍")
 
     @prefix_command_request.error
     @prefix_command_cancel.error
@@ -552,17 +654,26 @@ class SlotManager(commands.Cog):
 
     @slash_command_request.error
     @slash_command_cancel.error
+    @slash_command_accept.error
+    @slash_command_add.error
+    @slash_command_remove.error
     async def error_slash_command(self, interaction: discord.Interaction, error):
         if isinstance(error, Slash.RestrictionError) or \
                 isinstance(error, app_commands.TransformerError) or \
+                isinstance(error, app_commands.CommandInvokeError) or \
                 isinstance(error, ValidationError):
+            if isinstance(error, app_commands.CommandInvokeError):
+                msg = str(error.original)
+            else:
+                msg = str(error)
+
             if not interaction.response.is_done():
-                await interaction.response.send_message(str(error), ephemeral=True)
+                await interaction.response.send_message(msg, ephemeral=True)
             else:
                 await interaction.edit_original_response(
                     content=f'Unable to issue {interaction.command.name} with {str(interaction.command.data)}.\n'
                             f'Please report failure to an administrator.')
-                print(f'{str(error)}')
+                print(f'{msg}')
         else:
             raise error
 

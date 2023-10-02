@@ -158,6 +158,23 @@ class SlotRangeTransformer(app_commands.Transformer):
         return timeslot_range
 
 
+class DataIdTransformer(app_commands.Transformer):
+    def __init__(self, prefix):
+        self.prefix = prefix
+
+    async def transform(self, interaction: discord.Interaction, value: str) -> int:
+        try:
+            return int(value)
+        except ValueError:
+            if not value.startswith(self.prefix):
+                raise app_commands.TransformerError(value, self.type, self)
+
+            try:
+                return int(value[len(self.prefix):])
+            except (ValueError, IndexError):
+                raise app_commands.TransformerError(value, self.type, self)
+
+
 class NamespaceCheck:
     @classmethod
     def valid(cls,
@@ -244,7 +261,7 @@ class TimeCompleter:
 
         key = str(date)
         bot: ScheduleBot = ScheduleBot.singleton()
-        values = []
+        values = set()
         if key in bot.schedule_cache:
             schedule = bot.schedule_cache[key]
             tables = list(schedule.tables.values())
@@ -256,6 +273,9 @@ class TimeCompleter:
                             value = str(slot.time)
                             if current and not value.startswith(current):
                                 continue
-                            values.append(value)
+                            values.add((value, value))
+                if after:
+                    closing = str(tables[0].closing)
+                    values.add((f'{closing} (Closing)', closing))
 
-        return [app_commands.Choice(name=x, value=x) for x in values if x]
+        return [app_commands.Choice(name=x, value=y) for x, y in values if x]

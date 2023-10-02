@@ -198,14 +198,20 @@ class ScheduleManager(commands.Cog):
 
     async def error_slash_command(self, interaction: discord.Interaction, error):
         if isinstance(error, Slash.RestrictionError) or \
+                isinstance(error, app_commands.CommandInvokeError) or \
                 isinstance(error, app_commands.TransformerError):
+            if isinstance(error, app_commands.CommandInvokeError):
+                msg = str(error.original)
+            else:
+                msg = str(error)
+
             if not interaction.response.is_done():
-                await interaction.response.send_message(str(error), ephemeral=True)
+                await interaction.response.send_message(msg, ephemeral=True)
             else:
                 await interaction.edit_original_response(
                     content=f'Unable to issue {interaction.command.name} with {str(interaction.command.data)}.\n'
                             f'Please report failure to an administrator.')
-                print(f'{str(error)}')
+                print(f'{msg}')
         else:
             raise error
 
