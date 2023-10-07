@@ -1,6 +1,7 @@
 import logging
 import typing
 import inspect
+from collections import OrderedDict
 from datetime import timedelta
 from functools import partial
 
@@ -10,7 +11,7 @@ from discord import app_commands
 
 from core.bot_core import ScheduleBot
 from core.util import Channel
-from model.schedule import ScheduleSlotRange
+from model.schedule import ScheduleSlotRange, ScheduleSlot
 from model.schedule_config import ScheduleConfig
 from util.type import *
 from util.consts import DAYS_OF_THE_WEEK
@@ -242,7 +243,10 @@ class DateCompleter:
 
 class TimeCompleter:
     def __init__(self,
+                 terminus: bool = False,
                  **depend: typing.Union[typing.Type[app_commands.Transformer], app_commands.Transformer]):
+        self.terminus = terminus
+
         if depend:
             if len(depend) > 1:
                 raise ValueError("Can only depend on 1 other Time variable")
@@ -251,49 +255,148 @@ class TimeCompleter:
         else:
             self.depend = list()
 
+    @staticmethod
+    def process_terminus(
+            ordered_dict: typing.Dict[typing.Tuple[str, MeridiemTime], typing.List[ScheduleSlot]]
+    ) -> typing.Dict[typing.Tuple[str, MeridiemTime], typing.List[ScheduleSlot]]:
+        # For Author-owned, we need to use the previous slots ownership when determining ownership
+        #   For example, if I own 3:00pm and 5:00pm, my cancel ends at either 5:00pm-7:00pm (or to closing)
+        # For Free-only, we need to use the previous slots ownership when determining ownership
+        #   For example, if 3:00pm is taken, I can still reserve 1:00pm to 3:00pm
+        if len(ordered_dict) == 1:
+            return ordered_dict
+
+        result = OrderedDict()
+        i = iter(ordered_dict.items())
+        key, prev = next(i)
+        result[key] = prev
+
+        for key, cur in i:
+            result[key] = prev
+            prev = cur
+
+        return result
+
+    def process_slots(
+            self,
+            interaction: discord.Interaction,
+            slot_info: typing.Dict[typing.Tuple[str, MeridiemTime], typing.List[ScheduleSlot]],
+            current: str = '',
+    ) -> typing.Set[typing.Tuple[str, MeridiemTime]]:
+        values = set()
+        # Return all slots, regardless of state
+        for name, value in slot_info.keys():
+            if current and not name.startswith(current):
+                continue
+
+            values.add((name, value))
+        return values
+
     @NamespaceCheck.valid(name="date", transformer=DateTransformer)
     async def auto_complete(
             self,
-            interaction: discord.Interaction = None,
+            interaction: discord.Interaction,
             current: str = ''
     ) -> typing.List[app_commands.Choice[str]]:
         try:
-            date = await DateTransformer().transform(interaction, interaction.namespace["date"])
+            date_obj = await DateTransformer().transform(interaction, interaction.namespace["date"])
 
             # Detect if we must be after a time
-            after = None
+            after: typing.Union[MeridiemTime, None] = None
             if self.depend:
                 time_transformer = self.depend[1]() if inspect.isclass(self.depend[1]) else self.depend[1]
+
                 try:
                     after = await time_transformer.transform(interaction, interaction.namespace[self.depend[0]])
+                    if not isinstance(after, MeridiemTime):
+                        app_commands.TransformerError(after, time_transformer.type, time_transformer)
+
                 except app_commands.TransformerError:
                     return []
 
-            key = str(date)
+            date = str(date_obj)
             bot: ScheduleBot = ScheduleBot.singleton()
             values = set()
-            if key in bot.schedule_cache:
-                schedule = bot.schedule_cache[key]
+            if date in bot.schedule_cache:
+                schedule = bot.schedule_cache[date]
                 tables = list(schedule.tables.values())
                 if tables:
-                    timeslots = list(tables[0].timeslots.values())
-                    if timeslots:
-                        for slot in timeslots:
-                            if not after or slot.time > after:
-                                value = str(slot.time)
-                                if current and not value.startswith(current):
-                                    continue
-                                values.add((value, value))
-                    if after:
-                        closing = str(tables[0].closing)
-                        values.add((f'{closing} (Closing)', closing))
+                    # Create a timeslot dict that indexes per table info by slot
+                    slot_dict: typing.Dict[typing.Tuple[str, MeridiemTime], typing.List[ScheduleSlot]] = OrderedDict()
+                    for table in tables:
+                        timeslots = list(table.timeslots.values())
+                        if timeslots:
+                            for slot in timeslots:
+                                slot_dict.setdefault((str(slot.time), slot.time), list()).append(slot)
 
-            return [app_commands.Choice(name=x, value=y) for x, y in
-                    sorted(list(values), key=lambda z: MeridiemTime(z[1])) if x and y]
+                        if self.terminus:
+                            closing_slot = table.closing_timeslot
+
+                            if not after or closing_slot.time > after:
+                                slot_dict.setdefault(
+                                    (f'{str(closing_slot.time)} (Closing)', closing_slot.time),
+                                    list()
+                                ).append(closing_slot)
+
+                    if self.terminus:
+                        slot_dict = self.process_terminus(slot_dict)
+
+                    if after:
+                        keys = [key for key in slot_dict.keys()]
+                        for key in keys:
+                            if key[1] <= after:
+                                del slot_dict[key]
+
+                    values = self.process_slots(interaction, slot_dict, current)
+
+            return [app_commands.Choice(name=x, value=str(y)) for x, y in
+                    sorted(list(values), key=lambda z: z[1]) if x and y]
 
         except Exception as e:
             logging.getLogger('discord').exception(e)
             return []
+
+
+class AuthorOnlyTimeCompleter(TimeCompleter):
+    def process_slots(
+            self,
+            interaction: discord.Interaction,
+            slot_info: typing.Dict[typing.Tuple[str, str], typing.List[ScheduleSlot]],
+            current: str = ''
+    ) -> typing.Set[typing.Tuple[str, str]]:
+        values = set()
+        # Return only times which the author owns at least 1 slot
+        for key, slots in slot_info.items():
+            if current and not key[0].startswith(current):
+                continue
+
+            owners = set().union(*[set(slot.participants) for slot in slots])
+            if str(interaction.user.id) not in owners:
+                continue
+
+            values.add(key)
+        return values
+
+
+class FreeTimeCompleter(TimeCompleter):
+    def process_slots(
+            self,
+            interaction: discord.Interaction,
+            slot_info: typing.Dict[typing.Tuple[str, str], typing.List[ScheduleSlot]],
+            current: str = '',
+            terminus: bool = False
+    ) -> typing.Set[typing.Tuple[str, str]]:
+        values = set()
+        # Return only times which have at least 1 free slot
+        for key, slots in slot_info.items():
+            if current and not key[0].startswith(current):
+                continue
+
+            if all([not slot.is_free() for slot in slots]):
+                continue
+
+            values.add(key)
+        return values
 
 
 class ActivityCompleter:

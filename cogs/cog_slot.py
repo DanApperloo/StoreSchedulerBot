@@ -32,7 +32,9 @@ from cogs.util import (
     DataIdTransformer,
     DateCompleter,
     TimeCompleter,
-    ActivityCompleter)
+    ActivityCompleter,
+    FreeTimeCompleter,
+    AuthorOnlyTimeCompleter)
 from model.schedule import ScheduleSlotRange
 from model.schedule_config import ScheduleConfig
 from util.date import DateTranslator, CommonDate
@@ -290,11 +292,8 @@ class SlotManager(commands.Cog):
             free_table.exec(times,
                             partial(timeslot_mark_as_owned, author, opponents, game))
 
-            await bound_schedule.message.edit(
-                content=self.bot.externalize_payload(
-                    str(bound_schedule.schedule),
-                    self.bot.ESCAPE_TOKEN
-                ))
+            # Update the schedule
+            await bound_schedule.update()
 
             if source_message:
                 await source_message.reply(
@@ -315,11 +314,8 @@ class SlotManager(commands.Cog):
             owned_table.exec(times,
                              timeslot_mark_as_free)
 
-            await bound_schedule.message.edit(
-                content=self.bot.externalize_payload(
-                    str(bound_schedule.schedule),
-                    self.bot.ESCAPE_TOKEN
-                ))
+            # Update the schedule
+            await bound_schedule.update()
 
             if source_message:
                 await source_message.reply(
@@ -362,11 +358,8 @@ class SlotManager(commands.Cog):
         free_table.exec(timeslot_range,
                         partial(timeslot_mark_as_owned, author, opponents, game))
 
-        await bound_schedule.message.edit(
-            content=self.bot.externalize_payload(
-                str(bound_schedule.schedule),
-                self.bot.ESCAPE_TOKEN
-            ))
+        # Update the schedule
+        await bound_schedule.update()
 
     async def remove(self,
                      date: CommonDate,
@@ -404,11 +397,8 @@ class SlotManager(commands.Cog):
         owned_table.exec(timeslot_range,
                          timeslot_mark_as_free)
 
-        await bound_schedule.message.edit(
-            content=self.bot.externalize_payload(
-                str(bound_schedule.schedule),
-                self.bot.ESCAPE_TOKEN
-            ))
+        # Update the schedule
+        await bound_schedule.update()
 
     @app_commands.command(
         name="request",
@@ -421,8 +411,8 @@ class SlotManager(commands.Cog):
         game="(Optional) Game being played")
     @app_commands.autocomplete(
         date=DateCompleter.auto_complete,
-        timeslot=TimeCompleter().auto_complete,
-        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete,
+        timeslot=FreeTimeCompleter().auto_complete,
+        timeslot_end=FreeTimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete,
         game=ActivityCompleter.auto_complete)
     @Slash.restricted_channel(Channel.SCHEDULE_REQUEST)
     async def slash_command_request(
@@ -496,8 +486,8 @@ class SlotManager(commands.Cog):
         timeslot_end="hr:m{am/pm} for end of reservation")
     @app_commands.autocomplete(
         date=DateCompleter.auto_complete,
-        timeslot=TimeCompleter().auto_complete,
-        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete
+        timeslot=AuthorOnlyTimeCompleter().auto_complete,
+        timeslot_end=AuthorOnlyTimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete
     )
     @Slash.restricted_channel(Channel.SCHEDULE_REQUEST)
     async def slash_command_cancel(
@@ -597,7 +587,7 @@ class SlotManager(commands.Cog):
     @app_commands.autocomplete(
         date=DateCompleter.auto_complete,
         timeslot=TimeCompleter().auto_complete,
-        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete,
+        timeslot_end=TimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete,
         game=ActivityCompleter.auto_complete
     )
     @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
@@ -656,7 +646,7 @@ class SlotManager(commands.Cog):
     @app_commands.autocomplete(
         date=DateCompleter.auto_complete,
         timeslot=TimeCompleter().auto_complete,
-        timeslot_end=TimeCompleter(timeslot=TimeTransformer).auto_complete
+        timeslot_end=TimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete
     )
     @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
     async def slash_command_remove(

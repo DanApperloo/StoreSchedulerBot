@@ -191,6 +191,9 @@ class MeridiemTime(time):
         memo[id(self)] = result
         return result
 
+    def __hash__(self):
+        return hash((self._phase, self.hour, self.minute, self.meridiem, self.tzinfo))
+
     @property
     def hour(self) -> int:
         h = super().hour  # Limited to range 0-23

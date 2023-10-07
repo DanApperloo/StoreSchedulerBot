@@ -278,6 +278,12 @@ class ScheduleTable:
         valid_times.extend([str(self.closing)])
         return str(time) in valid_times
 
+    @property
+    def closing_timeslot(self) -> ScheduleSlot:
+        closing_slot = copy.deepcopy(self.timeslots[next(reversed(self.timeslots))])
+        closing_slot.time = self.closing
+        return closing_slot
+
     def infer_interval(self) -> TimeTick:
         if len(self.timeslots) == 1:
             return MeridiemTime.infer_tick(list(self.timeslots.values())[0].time, self.closing)

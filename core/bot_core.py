@@ -17,8 +17,32 @@ from model.schedule import Schedule
 
 class BoundSchedule:
     def __init__(self, message: discord.Message, shed: Schedule):
+        self._bot = ScheduleBot.singleton()
         self.message = message
         self.schedule = shed
+
+    @staticmethod
+    async def create(schedule: Schedule):
+        _bot = ScheduleBot.singleton()
+        message = await _bot.readonly_channel.send(
+            content=_bot.externalize_payload(
+                str(schedule),
+                _bot.ESCAPE_TOKEN))
+        self = BoundSchedule(message, schedule)
+        _bot.modify_cache(self)
+        return self
+
+    async def update(self):
+        await self.message.edit(
+            content=self._bot.externalize_payload(
+                str(self.schedule),
+                self._bot.ESCAPE_TOKENt()
+            ))
+        self._bot.modify_cache(self)
+
+    async def delete(self):
+        await self.message.delete()
+        self._bot.modify_cache(self, remove=True)
 
 
 class ScheduleBot(commands.Bot):
@@ -91,18 +115,24 @@ class ScheduleBot(commands.Bot):
         return self._schedule_cache
 
     async def regenerate_schedule_cache(self):
-        async def _cache(
-                _message: discord.Message,
-                _schedule: Schedule):
-            key = str(_schedule.date)
+        async def _cache(_bound_schedule: BoundSchedule):
+            key = str(_bound_schedule.schedule.date)
             if key not in self.schedule_cache:
-                print(f'Cached schedule {_schedule.day} - {str(_schedule.date)}')
-                self.schedule_cache[key] = _schedule
-            elif str(_schedule) != str(self.schedule_cache[key]):
-                print(f'Updated cached schedule {_schedule.day} - {str(_schedule.date)}')
-                self.schedule_cache[key] = _schedule
+                print(f'Cached schedule {_bound_schedule.schedule.day} - {str(_bound_schedule.schedule.date)}')
+                self.schedule_cache[key] = _bound_schedule.schedule
+            elif str(_bound_schedule.schedule) != str(self.schedule_cache[key]):
+                print(f'Updated cached schedule {_bound_schedule.schedule.day} - {str(_bound_schedule.schedule.date)}')
+                self.schedule_cache[key] = _bound_schedule.schedule
 
         await self.process_schedules(_cache)
+
+    def modify_cache(self, bound_schedule: BoundSchedule, remove: bool = False):
+        key = str(bound_schedule.schedule.date)
+        if remove:
+            if key in self.schedule_cache:
+                del self.schedule_cache[key]
+        else:
+            self.schedule_cache[key] = bound_schedule.schedule
 
     def is_admin_user(self, _id: int) -> bool:
         return _id in self.ADMIN_USER_IDS
@@ -156,7 +186,7 @@ class ScheduleBot(commands.Bot):
                     parsed_schedule = Schedule.deserialize(
                         self.internalize_payload(message.content.strip(),
                                                  self.ESCAPE_TOKEN))
-                    await action(message, parsed_schedule)
+                    await action(BoundSchedule(message, parsed_schedule))
 
                 except ValueError:
                     print(f'Unable to parse message {message.id} as Schedule')
@@ -166,7 +196,7 @@ class ScheduleBot(commands.Bot):
                          date: CommonDate,
                          *,
                          force: bool = False,
-                         state: typing.Union[bool, None] = True) -> typing.Union[Schedule, None]:
+                         state: typing.Union[bool, None] = True) -> typing.Union[BoundSchedule, None]:
         bound_schedule: BoundSchedule = await self.find_bound_schedule(date, opened=state)
         if bound_schedule:
             if bound_schedule.schedule.open:
@@ -182,22 +212,15 @@ class ScheduleBot(commands.Bot):
                 return None
 
             bound_schedule.schedule = Schedule(date=date)
-            await bound_schedule.message.edit(
-                content=self.externalize_payload(
-                    str(bound_schedule.schedule),
-                    self.ESCAPE_TOKEN))
+            await bound_schedule.update()
 
             print(f'Force updated schedule for {bound_schedule.schedule.day} - {str(bound_schedule.schedule.date)}')
-            return bound_schedule.schedule
 
         else:
-            new_schedule = Schedule(date=date)
-            await self.readonly_channel.send(
-                content=self.externalize_payload(
-                    str(new_schedule),
-                    self.ESCAPE_TOKEN))
-            print(f'Created new Schedule: {new_schedule.day} - {str(new_schedule.date)}')
-            return new_schedule
+            bound_schedule = await BoundSchedule.create(Schedule(date=date))
+            print(f'Created new Schedule: {bound_schedule.schedule.day} - {str(bound_schedule.schedule.date)}')
+
+        return bound_schedule
 
     async def open_until(self,
                          date: CommonDate,
@@ -213,26 +236,22 @@ class ScheduleBot(commands.Bot):
             date_iter = date_iter + timedelta(days=1)
     
     async def close_until(self, date: CommonDate):
-        async def _close_until(_date: CommonDate, _message: discord.Message, _schedule: Schedule):
-            if _schedule.open and _schedule.date <= _date:
-                _schedule.open = False
-                await _message.edit(
-                    content=self.externalize_payload(
-                        str(_schedule),
-                        self.ESCAPE_TOKEN))
-                print(f'Closed schedule message {_message.id} for {_schedule.day} - {str(_schedule.date)}')
+        async def _close_until(_date: CommonDate, _bound_schedule: BoundSchedule):
+            if _bound_schedule.schedule.open and _bound_schedule.schedule.date <= _date:
+                _bound_schedule.schedule.open = False
+                await _bound_schedule.update()
+                print(f'Closed schedule message {_bound_schedule.message.id} '
+                      f'for {_bound_schedule.schedule.day} - {str(_bound_schedule.schedule.date)}')
 
         await self.process_schedules(partial(_close_until, date))
 
     async def close_given(self, date: CommonDate):
-        async def _close(_date: CommonDate, _message: discord.Message, _schedule: Schedule):
-            if _schedule.open and _schedule.date == _date:
-                _schedule.open = False
-                await _message.edit(
-                    content=self.externalize_payload(
-                        str(_schedule),
-                        self.ESCAPE_TOKEN))
-                print(f'Closed schedule message {_message.id} for {_schedule.day} - {str(_schedule.date)}')
+        async def _close(_date: CommonDate, _bound_schedule: BoundSchedule):
+            if _bound_schedule.schedule.open and _bound_schedule.schedule.date == _date:
+                _bound_schedule.schedule.open = False
+                await _bound_schedule.update()
+                print(f'Closed schedule message {_bound_schedule.message.id} '
+                      f'for {_bound_schedule.schedule.day} - {str(_bound_schedule.schedule.date)}')
 
         await self.process_schedules(partial(_close, date))
     
@@ -240,17 +259,17 @@ class ScheduleBot(commands.Bot):
         async def _clean_until(
                 _date: CommonDate,
                 _open_schedules: typing.Union[list, None],
-                _message: discord.Message,
-                _schedule: Schedule):
+                _bound_schedule: BoundSchedule):
 
-            if _schedule.date <= _date:
-                if _schedule.open:
+            if _bound_schedule.schedule.date <= _date:
+                if _bound_schedule.schedule.open:
                     if _open_schedules is not None:
-                        _open_schedules.append(BoundSchedule(_message, _schedule))
+                        _open_schedules.append(BoundSchedule(_bound_schedule.message, _bound_schedule.schedule))
                     return
 
-                await _message.delete()
-                print(f'Cleaned schedule message {_message.id} for {_schedule.day} - {str(_schedule.date)}')
+                await _bound_schedule.delete()
+                print(f'Cleaned schedule message {_bound_schedule.message.id} for '
+                      f'{_bound_schedule.schedule.day} - {str(_bound_schedule.schedule.date)}')
 
         await self.process_schedules(partial(_clean_until, date, skipped))
 
@@ -260,17 +279,17 @@ class ScheduleBot(commands.Bot):
         async def _clean(
                 _date: CommonDate,
                 _still_open: typing.Union[bool, None],
-                _message: discord.Message,
-                _schedule: Schedule):
+                _bound_schedule: BoundSchedule):
 
-            if _schedule.date == _date:
-                if _schedule.open:
+            if _bound_schedule.schedule.date == _date:
+                if _bound_schedule.schedule.open:
                     if _still_open is not None:
                         _still_open = True
                     return
 
-                await _message.delete()
-                print(f'Cleaned schedule message {_message.id} for {_schedule.day} - {str(_schedule.date)}')
+                await _bound_schedule.delete()
+                print(f'Cleaned schedule message {_bound_schedule.message.id} '
+                      f'for {_bound_schedule.schedule.day} - {str(_bound_schedule.schedule.date)}')
 
         await self.process_schedules(partial(_clean, date, open_still))
         return open_still

@@ -120,9 +120,10 @@ class ScheduleManager(commands.Cog):
             await ctx.send(f'Opened schedules until {str(date)}')
 
         else:
-            new_schedule = await self.bot.open_given(date, force=force)
-            if new_schedule:
-                await ctx.send(f'Opened schedule for {new_schedule.day} - {str(new_schedule.date)}')
+            bound_schedule = await self.bot.open_given(date, force=force)
+            if bound_schedule:
+                await ctx.send(
+                    f'Opened schedule for {bound_schedule.schedule.day} - {str(bound_schedule.schedule.date)}')
             else:
                 await ctx.send(
                     f'Cannot open due to existing Open Schedule.\n' +
