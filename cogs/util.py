@@ -1,3 +1,4 @@
+import logging
 import typing
 import inspect
 from datetime import timedelta
@@ -10,7 +11,9 @@ from discord import app_commands
 from core.bot_core import ScheduleBot
 from core.util import Channel
 from model.schedule import ScheduleSlotRange
+from model.schedule_config import ScheduleConfig
 from util.type import *
+from util.consts import DAYS_OF_THE_WEEK
 from util.date import CommonDate, DateTranslator
 from util.time import MeridiemTime
 
@@ -207,28 +210,34 @@ class DateCompleter:
             _: discord.Interaction,
             current: str
     ) -> typing.List[app_commands.Choice[str]]:
-        bot: ScheduleBot = ScheduleBot.singleton()
+        try:
+            bot: ScheduleBot = ScheduleBot.singleton()
 
-        def get_cached_dates() -> list[str]:
-            return [x for x in bot.schedule_cache]
+            def get_cached_dates() -> list[str]:
+                return [x for x in bot.schedule_cache]
 
-        def get_cached_days() -> list[str]:
-            full_week = DateTranslator.today() + timedelta(days=7)
-            return [DateTranslator.day_from_date(x.date).lower()
-                    for x in list(bot.schedule_cache.values()) if DateTranslator.today() <= x.date < full_week]
+            def get_cached_days() -> list[str]:
+                full_week = DateTranslator.today() + timedelta(days=7)
+                return [DateTranslator.day_from_date(x.date).lower()
+                        for x in list(bot.schedule_cache.values()) if DateTranslator.today() <= x.date < full_week]
 
-        if not current:
-            # Present all predicted open schedule days
-            values = get_cached_days()
-        else:
-            if current[0].isdigit():
-                # Recommend all predicted open schedule dates
-                values = [date for date in get_cached_dates() if date.startswith(current.lower())]
+            if not current:
+                # Present all predicted open schedule days
+                values = get_cached_days()
             else:
-                # Recommend all predicted open schedule days
-                values = [day for day in get_cached_days() if day.startswith(current.lower())]
+                if current[0].isdigit():
+                    # Recommend all predicted open schedule dates
+                    values = [date for date in get_cached_dates() if date.startswith(current.lower())]
+                else:
+                    # Recommend all predicted open schedule days
+                    values = [day for day in get_cached_days() if day.startswith(current.lower())]
 
-        return [app_commands.Choice(name=x.capitalize(), value=x) for x in values if x]
+            return [app_commands.Choice(name=x.capitalize(), value=x) for x in
+                    sorted(values, key=lambda z: DAYS_OF_THE_WEEK.index(z.lower())) if x]
+
+        except Exception as e:
+            logging.getLogger('discord').exception(e)
+            return []
 
 
 class TimeCompleter:
@@ -248,34 +257,60 @@ class TimeCompleter:
             interaction: discord.Interaction = None,
             current: str = ''
     ) -> typing.List[app_commands.Choice[str]]:
-        date = await DateTransformer().transform(interaction, interaction.namespace["date"])
+        try:
+            date = await DateTransformer().transform(interaction, interaction.namespace["date"])
 
-        # Detect if we must be after a time
-        after = None
-        if self.depend:
-            time_transformer = self.depend[1]() if inspect.isclass(self.depend[1]) else self.depend[1]
-            try:
-                after = await time_transformer.transform(interaction, interaction.namespace[self.depend[0]])
-            except app_commands.TransformerError:
-                return []
+            # Detect if we must be after a time
+            after = None
+            if self.depend:
+                time_transformer = self.depend[1]() if inspect.isclass(self.depend[1]) else self.depend[1]
+                try:
+                    after = await time_transformer.transform(interaction, interaction.namespace[self.depend[0]])
+                except app_commands.TransformerError:
+                    return []
 
-        key = str(date)
-        bot: ScheduleBot = ScheduleBot.singleton()
-        values = set()
-        if key in bot.schedule_cache:
-            schedule = bot.schedule_cache[key]
-            tables = list(schedule.tables.values())
-            if tables:
-                timeslots = list(tables[0].timeslots.values())
-                if timeslots:
-                    for slot in timeslots:
-                        if not after or slot.time > after:
-                            value = str(slot.time)
-                            if current and not value.startswith(current):
-                                continue
-                            values.add((value, value))
-                if after:
-                    closing = str(tables[0].closing)
-                    values.add((f'{closing} (Closing)', closing))
+            key = str(date)
+            bot: ScheduleBot = ScheduleBot.singleton()
+            values = set()
+            if key in bot.schedule_cache:
+                schedule = bot.schedule_cache[key]
+                tables = list(schedule.tables.values())
+                if tables:
+                    timeslots = list(tables[0].timeslots.values())
+                    if timeslots:
+                        for slot in timeslots:
+                            if not after or slot.time > after:
+                                value = str(slot.time)
+                                if current and not value.startswith(current):
+                                    continue
+                                values.add((value, value))
+                    if after:
+                        closing = str(tables[0].closing)
+                        values.add((f'{closing} (Closing)', closing))
 
-        return [app_commands.Choice(name=x, value=y) for x, y in values if x]
+            return [app_commands.Choice(name=x, value=y) for x, y in
+                    sorted(list(values), key=lambda z: MeridiemTime(z[1])) if x and y]
+
+        except Exception as e:
+            logging.getLogger('discord').exception(e)
+            return []
+
+
+class ActivityCompleter:
+    @classmethod
+    async def auto_complete(
+            cls,
+            _: discord.Interaction,
+            current: str
+    ) -> typing.List[app_commands.Choice[str]]:
+        try:
+            activities = ScheduleConfig.get_activities()
+
+            if current:
+                return [app_commands.Choice(name=x, value=x) for x in activities if x.startswith(current)]
+            else:
+                return [app_commands.Choice(name=x, value=x) for x in activities]
+
+        except Exception as e:
+            logging.getLogger('discord').exception(e)
+            return []

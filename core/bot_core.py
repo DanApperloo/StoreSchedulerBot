@@ -139,9 +139,6 @@ class ScheduleBot(commands.Bot):
                     if (parsed_schedule.open == opened or opened is None) and \
                             parsed_schedule.date == date:
                         result = BoundSchedule(message, parsed_schedule)
-                        print(
-                            f'Found first {"OPEN" if parsed_schedule.open else "CLOSED"} '
-                            f'Bound Schedule in message {message.id}')
                         break
 
                 except ValueError:

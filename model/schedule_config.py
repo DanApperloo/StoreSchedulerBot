@@ -96,6 +96,9 @@ class ScheduleConfig:
                 config=self._config['schedule'].get('weekly', None)
             )
 
+            # Construct Activities - Optional
+            self._activities = self._config['schedule'].get('activities', [])
+
         except (KeyError, TypeError, ValueError) as e:
             print(f'Invalid config: {self.__config_name}')
             raise ConfigError(e)
@@ -109,6 +112,15 @@ class ScheduleConfig:
         for day in days:
             if day.lower() not in DAYS_OF_THE_WEEK:
                 raise KeyError(f'Invalid day {day}')
+
+    @property
+    def activities(self) -> list[str]:
+        return self._activities
+
+    @staticmethod
+    def get_activities() -> list[str]:
+        self = ScheduleConfig.singleton()
+        return self.activities
 
     @staticmethod
     def open_days() -> list[str]:

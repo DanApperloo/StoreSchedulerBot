@@ -399,9 +399,17 @@ class Schedule:
 
     def qualify_slotrange(self, timeslot_range: ScheduleSlotRange) -> ScheduleSlotRange:
         if timeslot_range.is_indeterminate():
+            sample_table = list(self.tables.values())[0]
             end_time = copy.deepcopy(timeslot_range.start_time)
-            end_time += list(self.tables.values())[0].infer_interval()
-            timeslot_range.qualify(end_time)
+            end_time += sample_table.infer_interval()
+
+            # Check if the end-time is valid, if qualify against it
+            # If not, try to qualify against closing.
+            # This is to support larger than interval final timeslots.
+            if sample_table.has_time(end_time):
+                timeslot_range.qualify(end_time)
+            else:
+                timeslot_range.qualify(sample_table.closing)
 
         if not self.is_slotrange_valid(timeslot_range):
             raise ValueError(f'Invalid slot range {str(timeslot_range)} for {str(self.date)}')

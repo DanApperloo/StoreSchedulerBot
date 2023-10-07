@@ -1,4 +1,5 @@
 import datetime
+import logging
 import typing
 
 from datetime import timedelta
@@ -193,6 +194,7 @@ class ScheduleManager(commands.Cog):
         if isinstance(error, Prefix.RestrictionError) or \
                 isinstance(error, commands.BadArgument):
             await ctx.send(str(error))
+            logging.getLogger('discord').exception(error)
         else:
             raise error
 
@@ -211,7 +213,8 @@ class ScheduleManager(commands.Cog):
                 await interaction.edit_original_response(
                     content=f'Unable to issue {interaction.command.name} with {str(interaction.command.data)}.\n'
                             f'Please report failure to an administrator.')
-                print(f'{msg}')
+
+            logging.getLogger('discord').exception(error.original)
         else:
             raise error
 
