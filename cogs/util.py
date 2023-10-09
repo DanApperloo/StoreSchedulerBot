@@ -72,6 +72,30 @@ class Slash(Restriction):
 
         return app_commands.check(partial(_predicate, channel))
 
+    @classmethod
+    def namespace(
+            cls,
+            name: str,
+            transformer: typing.Union[typing.Type[app_commands.Transformer], app_commands.Transformer]):
+        if inspect.isclass(transformer):
+            t = transformer()
+        else:
+            t = transformer
+
+        async def _predicate(
+                _name: str,
+                _transformer: app_commands.Transformer,
+                interaction: discord.Interaction) -> bool:
+            if _name not in interaction.namespace:
+                return False
+            try:
+                _ = await _transformer.transform(interaction, interaction.namespace[_name])
+            except app_commands.TransformerError:
+                return False
+            return True
+
+        return app_commands.check(partial(_predicate, name, t))
+
 
 class Prefix(Restriction):
     class RestrictionError(commands.CheckFailure):
@@ -117,12 +141,59 @@ class TimeConverter(commands.Converter):
 
 
 class SlotRangeConverter(commands.Converter):
-    async def convert(self, ctx: commands.Context, argument: str) -> ScheduleSlotRange:
+    def __init__(self, depend: str = ''):
+        self.depend = depend
+        self.strict = True
+
+    @staticmethod
+    def raw_convert(argument: str) -> ScheduleSlotRange:
         try:
-            timeslot_range = ScheduleSlotRange.deserialize(argument.strip() if argument else argument)
+            return ScheduleSlotRange.deserialize(argument.strip() if argument else argument)
         except ValueError:
             raise commands.BadArgument(f'Cannot convert {argument} to SlotRange')
+
+    def get_dependent_date(self, ctx: commands.Context) -> typing.Union[CommonDate, None]:
+        # Try ot access the kwargs param
+        date = ctx.kwargs.get(self.depend, None)
+        if not date:
+            try:
+                # Try to access the args param
+                date = ctx.args[2 + list(ctx.command.clean_params).index(self.depend)]
+            except (ValueError, IndexError):
+                return None
+
+        if not isinstance(date, CommonDate):
+            return None
+
+        return date
+
+    async def convert(self, ctx: commands.Context, argument: str) -> ScheduleSlotRange:
+        timeslot_range = self.raw_convert(argument)
+
+        if self.depend:
+            date = self.get_dependent_date(ctx)
+            if not date:
+                return timeslot_range
+
+            _bot: ScheduleBot = ScheduleBot.singleton()
+
+            key = str(date)
+            if key not in _bot.schedule_cache:
+                return timeslot_range
+
+            try:
+                timeslot_range = _bot.schedule_cache[key].qualify_slotrange(timeslot_range, strict=self.strict)
+            except ValueError:
+                raise commands.BadArgument(
+                    f"Invalid timeslot range, see {_bot.readonly_channel.mention} for valid timeslots.")
+
         return timeslot_range
+
+
+class FuzzySlotRangeConverter(SlotRangeConverter):
+    def __init__(self, depend: str = ''):
+        super().__init__(depend)
+        self.strict = False
 
 
 class ForceConverter(commands.Converter):
@@ -177,31 +248,6 @@ class DataIdTransformer(app_commands.Transformer):
                 return int(value[len(self.prefix):])
             except (ValueError, IndexError):
                 raise app_commands.TransformerError(value, self.type, self)
-
-
-class NamespaceCheck:
-    @classmethod
-    def valid(cls,
-              name: str,
-              transformer: typing.Union[typing.Type[app_commands.Transformer], app_commands.Transformer]):
-        if inspect.isclass(transformer):
-            t = transformer()
-        else:
-            t = transformer
-
-        async def _predicate(
-                _name: str,
-                _transformer: app_commands.Transformer,
-                interaction: discord.Interaction) -> bool:
-            if _name not in interaction.namespace:
-                return False
-            try:
-                _ = await _transformer.transform(interaction, interaction.namespace[_name])
-            except app_commands.TransformerError:
-                return False
-            return True
-
-        return app_commands.check(partial(_predicate, name, t))
 
 
 class DateCompleter:
@@ -292,7 +338,7 @@ class TimeCompleter:
             values.add((name, value))
         return values
 
-    @NamespaceCheck.valid(name="date", transformer=DateTransformer)
+    @Slash.namespace(name="date", transformer=DateTransformer)
     async def auto_complete(
             self,
             interaction: discord.Interaction,

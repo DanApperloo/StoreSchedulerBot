@@ -161,6 +161,12 @@ class ScheduleSlotRange:
             raise AttributeError(f'Accessing end_time on indeterminate {self.__class__.__name__}')
         return self._end_time
 
+    @property
+    def period(self) -> TimeTick:
+        if self._end_time is None:
+            raise AttributeError(f'Accessing end_time on indeterminate {self.__class__.__name__}')
+        return self._end_time - self.start_time
+
     def is_indeterminate(self) -> bool:
         return self._end_time is None
 
@@ -403,19 +409,58 @@ class Schedule:
                                              escape_token=escape_token)
         return output
 
-    def qualify_slotrange(self, timeslot_range: ScheduleSlotRange) -> ScheduleSlotRange:
+    def qualify_slotrange(
+            self,
+            timeslot_range: ScheduleSlotRange,
+            strict: bool = True) -> ScheduleSlotRange:
+        sample_table = list(self.tables.values())[0]
+
+        # If indeterminate, determine range end (extending to Close if last slot)
         if timeslot_range.is_indeterminate():
-            sample_table = list(self.tables.values())[0]
             end_time = copy.deepcopy(timeslot_range.start_time)
-            end_time += sample_table.infer_interval()
+            interval = sample_table.infer_interval()
+            end_time += interval
 
             # Check if the end-time is valid, if qualify against it
             # If not, try to qualify against closing.
             # This is to support larger than interval final timeslots.
-            if sample_table.has_time(end_time):
+            if not strict or (strict and sample_table.has_time(end_time)):
                 timeslot_range.qualify(end_time)
             else:
                 timeslot_range.qualify(sample_table.closing)
+
+        # Strict Qualify means start and end time must match
+        # Fuzzy (Not Strict) Qualify means start and end time may be adjusted to make the period larger
+        #    in order to create a valid timeslot range
+        if not strict:
+            def find_closest_time(value, after=True) -> MeridiemTime:
+                new_time = value
+
+                if not sample_table.has_time(value):
+                    candidate_distance = []
+                    candidate_time = []
+
+                    slots = list(sample_table.timeslots.values())
+                    if after:
+                        slots.append(sample_table.closing_timeslot)
+
+                    for slot_time in [x.time for x in slots]:
+                        distance = float(slot_time - value)
+                        if (after and distance < 0) or (not after and distance > 0):
+                            continue
+
+                        candidate_distance.append(abs(distance))
+                        candidate_time.append(slot_time)
+
+                    if candidate_time and candidate_distance:
+                        new_time = candidate_time[candidate_distance.index(min(candidate_distance))]
+
+                return new_time
+
+            # If we are Fuzzy, then adjust the end up and the start down to the Slot boundaries
+            new_end = find_closest_time(timeslot_range.end_time, after=True)
+            new_start = find_closest_time(timeslot_range.start_time, after=False)
+            timeslot_range = ScheduleSlotRange(new_start, new_end)
 
         if not self.is_slotrange_valid(timeslot_range):
             raise ValueError(f'Invalid slot range {str(timeslot_range)} for {str(self.date)}')

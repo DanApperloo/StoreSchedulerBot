@@ -112,6 +112,22 @@ async def main():
         # Start Command Processing
         bot.unpause_cogs.set()
 
+    @bot.event
+    async def on_command_error(ctx: commands.Context, error):
+        if isinstance(error, commands.CommandNotFound):
+            await ctx.message.reply(str(error))
+            return
+
+        command = ctx.command
+        if command and command.has_error_handler():
+            return
+
+        cog = ctx.cog
+        if cog and cog.has_error_handler():
+            return
+
+        logger.error('Ignoring exception in command %s', command, exc_info=error)
+
     @bot.command(name="sync")
     @Prefix.admin_only()
     @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)

@@ -27,7 +27,8 @@ class BoundSchedule:
         message = await _bot.readonly_channel.send(
             content=_bot.externalize_payload(
                 str(schedule),
-                _bot.ESCAPE_TOKEN))
+                _bot.ESCAPE_TOKEN
+            ))
         self = BoundSchedule(message, schedule)
         _bot.modify_cache(self)
         return self
@@ -36,7 +37,7 @@ class BoundSchedule:
         await self.message.edit(
             content=self._bot.externalize_payload(
                 str(self.schedule),
-                self._bot.ESCAPE_TOKENt()
+                self._bot.ESCAPE_TOKEN
             ))
         self._bot.modify_cache(self)
 

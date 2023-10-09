@@ -26,7 +26,7 @@ def test_timetick_new_invalid():
         TimeTick([0]) # noqa
 
     # Invalid Types
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError):
         TimeTick(["Monday", "Tuesday"]) # noqa
 
     # Bad Granularity
@@ -47,38 +47,38 @@ def test_timetick_new_invalid():
 def test_timetick_new_valid():
     # Simple Hour
     time_tick: TimeTick = TimeTick("3hr")
-    assert time_tick.hours == 3
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_hours == 3
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is False
 
     # Dual Hour and Minutes - Combined
     time_tick = TimeTick("10hr30m")
-    assert time_tick.hours == 10
-    assert time_tick.minutes == 30
+    assert time_tick.scalar_hours == 10
+    assert time_tick.scalar_minutes == 30
     assert time_tick.is_negative is False
 
     # Dual Hour and Minutes - Separate
     time_tick = TimeTick("10hr 30m")
-    assert time_tick.hours == 10
-    assert time_tick.minutes == 30
+    assert time_tick.scalar_hours == 10
+    assert time_tick.scalar_minutes == 30
     assert time_tick.is_negative is False
 
     # Large Minutes
     time_tick = TimeTick("125m")
-    assert time_tick.hours == 2
-    assert time_tick.minutes == 5
+    assert time_tick.scalar_hours == 2
+    assert time_tick.scalar_minutes == 5
     assert time_tick.is_negative is False
 
     # Explicit Sign - Positive
     time_tick = TimeTick("+125m")
-    assert time_tick.hours == 2
-    assert time_tick.minutes == 5
+    assert time_tick.scalar_hours == 2
+    assert time_tick.scalar_minutes == 5
     assert time_tick.is_negative is False
 
     # Explicit Sign - Negative
     time_tick = TimeTick("-20m")
-    assert time_tick.hours == 0
-    assert time_tick.minutes == 20
+    assert time_tick.scalar_hours == 0
+    assert time_tick.scalar_minutes == 20
     assert time_tick.is_negative is True
 
 
@@ -87,24 +87,24 @@ def test_timetick_copy_valid():
     copy_tick: TimeTick = copy.copy(time_tick)
 
     assert time_tick is not copy_tick
-    assert time_tick.hours == copy_tick.hours
-    assert time_tick.minutes == copy_tick.minutes
+    assert time_tick.scalar_hours == copy_tick.scalar_hours
+    assert time_tick.scalar_minutes == copy_tick.scalar_minutes
     assert time_tick.is_negative == copy_tick.is_negative
 
     time_tick: TimeTick = TimeTick("20hr")
     copy_tick: TimeTick = copy.copy(time_tick)
 
     assert time_tick is not copy_tick
-    assert time_tick.hours == copy_tick.hours
-    assert time_tick.minutes == copy_tick.minutes
+    assert time_tick.scalar_hours == copy_tick.scalar_hours
+    assert time_tick.scalar_minutes == copy_tick.scalar_minutes
     assert time_tick.is_negative == copy_tick.is_negative
 
     time_tick: TimeTick = TimeTick("-2hr5m")
     copy_tick: TimeTick = copy.copy(time_tick)
 
     assert time_tick is not copy_tick
-    assert time_tick.hours == copy_tick.hours
-    assert time_tick.minutes == copy_tick.minutes
+    assert time_tick.scalar_hours == copy_tick.scalar_hours
+    assert time_tick.scalar_minutes == copy_tick.scalar_minutes
     assert time_tick.is_negative == copy_tick.is_negative
 
 
@@ -246,74 +246,74 @@ def test_meridiemtime_infer_tick_positive():
     earlier_time = MeridiemTime("11:00am")
     later_time = MeridiemTime("11:30am")
     time_tick = MeridiemTime.infer_tick(earlier_time, later_time)
-    assert time_tick.hours == 0
-    assert time_tick.minutes == 30
+    assert time_tick.scalar_hours == 0
+    assert time_tick.scalar_minutes == 30
     assert time_tick.is_negative is False
 
     # Simple Infer Tick
     earlier_time = MeridiemTime("10:30am")
     later_time = MeridiemTime("11:30am")
     time_tick = MeridiemTime.infer_tick(earlier_time, later_time)
-    assert time_tick.hours == 1
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_hours == 1
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is False
 
     # Crosses Meridiem
     earlier_time = MeridiemTime("11:00am")
     later_time = MeridiemTime("1:00pm")
     time_tick = MeridiemTime.infer_tick(earlier_time, later_time)
-    assert time_tick.hours == 2
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_hours == 2
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is False
 
     # Crosses Day
     earlier_time = MeridiemTime("12:00am", phase=0)
     later_time = MeridiemTime("12:00am", phase=1)
     time_tick = MeridiemTime.infer_tick(earlier_time, later_time)
-    assert time_tick.days == 1
-    assert time_tick.hours == 0
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_days == 1
+    assert time_tick.scalar_hours == 0
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is False
 
     # Edge - To PM
     earlier_time = MeridiemTime("11:00am")
     later_time = MeridiemTime("12:00pm")
     time_tick = MeridiemTime.infer_tick(earlier_time, later_time)
-    assert time_tick.hours == 1
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_hours == 1
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is False
 
     # Edge - To AM
     earlier_time = MeridiemTime("11:50pm", phase=0)
     later_time = MeridiemTime("12:00am", phase=1)
     time_tick = MeridiemTime.infer_tick(earlier_time, later_time)
-    assert time_tick.hours == 0
-    assert time_tick.minutes == 10
+    assert time_tick.scalar_hours == 0
+    assert time_tick.scalar_minutes == 10
     assert time_tick.is_negative is False
 
     # Negative Tick
     earlier_time = MeridiemTime("11:00am")
     later_time = MeridiemTime("1:00pm")
     time_tick = MeridiemTime.infer_tick(later_time, earlier_time)
-    assert time_tick.hours == 2
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_hours == 2
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is True
 
     # Negative Tick - Large
     earlier_time = MeridiemTime("12:00am", phase=0)
     later_time = MeridiemTime("11:50pm", phase=0)
     time_tick = MeridiemTime.infer_tick(later_time, earlier_time)
-    assert time_tick.hours == 23
-    assert time_tick.minutes == 50
+    assert time_tick.scalar_hours == 23
+    assert time_tick.scalar_minutes == 50
     assert time_tick.is_negative is True
 
     # Negative Tick - Day
     earlier_time = MeridiemTime("12:00am", phase=-1)
     later_time = MeridiemTime("12:00am", phase=0)
     time_tick = MeridiemTime.infer_tick(later_time, earlier_time)
-    assert time_tick.days == 1
-    assert time_tick.hours == 0
-    assert time_tick.minutes == 0
+    assert time_tick.scalar_days == 1
+    assert time_tick.scalar_hours == 0
+    assert time_tick.scalar_minutes == 0
     assert time_tick.is_negative is True
 
 

@@ -4,7 +4,6 @@ import typing
 
 from typing import TypeVar
 from datetime import timedelta, time
-from collections.abc import Sequence
 
 from util.type import is_not_numerical, is_sequence_but_not_str
 
@@ -19,33 +18,17 @@ class TimeTick(timedelta):
     __ROLL_TRIGGER = 60
 
     def __new__(cls,
-                duration: typing.Union[re.Match, str, timedelta, Sequence[int, int]],
-                *,
-                negative: bool = False) -> TTimeTick:
+                duration: typing.Union[re.Match, str, timedelta]
+                ) -> TTimeTick:
         """
 
         :param duration:
-        :param negative: Ignored if duration is String or Match.
         """
-        if is_sequence_but_not_str(duration) and len(duration) == 2:
-            if is_not_numerical(duration[0]):
-                raise TypeError(f'Invalid input type in sequence[0]={type(duration[0])}')
-            if is_not_numerical(duration[1]):
-                raise TypeError(f'Invalid input type in sequence[1]={type(duration[1])}')
-
-            roll, minute = divmod(int(duration[1]), 60)
-            hour = int(duration[0]) + roll
-            self = super().__new__(cls,
-                                   hours=hour,
-                                   minutes=minute)
-            self._negative = negative
-            return self
-
         if isinstance(duration, timedelta):
             self = super().__new__(cls,
                                    days=duration.days,
-                                   seconds=duration.seconds)
-            self._negative = negative
+                                   seconds=duration.seconds,
+                                   microseconds=duration.microseconds)
             return self
 
         if isinstance(duration, str):
@@ -83,45 +66,72 @@ class TimeTick(timedelta):
         hours += params.get(cls.__GRANULARITY[0], 0)
 
         self = super().__new__(cls,
-                               hours=hours,
-                               minutes=minutes)
-        self._negative = negative
+                               hours=-hours if negative else hours,
+                               minutes=-minutes if negative else minutes)
         return self
 
     def __copy__(self) -> TTimeTick:
-        return TimeTick(str(self), negative=self.is_negative)
+        return TimeTick(self)
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo) -> TTimeTick:
         result = self.__copy__()
         memo[id(self)] = result
         return result
 
     @property
-    def minutes(self) -> int:
+    def scalar_seconds(self) -> int:
         """
 
         :return: 0 - 59
         """
-        return (self.seconds // 60) % 60
+        return abs(self).seconds % 60
 
     @property
-    def hours(self) -> int:
+    def scalar_minutes(self) -> int:
+        """
+
+        :return: 0 - 59
+        """
+        return (abs(self).seconds // 60) % 60
+
+    @property
+    def scalar_hours(self) -> int:
         """
 
         :return: 0 - 23
         """
-        return ((self.seconds // 60) // 60) % 24
+        return ((abs(self).seconds // 60) // 60) % 24
+
+    @property
+    def scalar_days(self) -> int:
+        """
+
+        :return: 0 - 23
+        """
+        return abs(self).days
 
     @property
     def is_negative(self) -> bool:
-        return self._negative
+        return self.days < 0
+
+    def __neg__(self) -> TTimeTick:
+        return type(self)(super().__neg__())
+
+    def as_scalar(self) -> float:
+        total = abs(self).total_seconds()
+        sign = -1 if self.is_negative else 1
+        return total * sign
+
+    def __int__(self) -> int:
+        return int(self.as_scalar())
+
+    def __float__(self) -> float:
+        return self.as_scalar()
 
     def __repr__(self) -> str:
         return f'{"-" if self.is_negative else ""}' + \
-               f'{"{}hr".format(self.hours) if self.hours else ""}' + \
-               f'{self.minutes:02}m'
-
-    __str__ = __repr__
+               f'{"{}hr".format(self.scalar_hours) if self.scalar_hours else ""}' + \
+               f'{self.scalar_minutes:02}m'
 
 
 TMeridiemTime = TypeVar("TMeridiemTime", bound="MeridiemTime")
@@ -186,12 +196,12 @@ class MeridiemTime(time):
     def __copy__(self) -> TMeridiemTime:
         return MeridiemTime(str(self), tzinfo=self.tzinfo, phase=self.phase)
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo) -> TMeridiemTime:
         result = self.__copy__()
         memo[id(self)] = result
         return result
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return hash((self._phase, self.hour, self.minute, self.meridiem, self.tzinfo))
 
     @property
@@ -250,10 +260,10 @@ class MeridiemTime(time):
         else:
             return self._phase >= other._phase
 
-    def __internal_add(self, tick: TimeTick) -> TMeridiemTime:
-        roll, minute = divmod(super().minute + tick.minutes, 60)
+    def __add_tick(self, tick: TimeTick) -> TMeridiemTime:
+        roll, minute = divmod(super().minute + tick.scalar_minutes, 60)
         hour = super().hour + roll
-        roll, hour = divmod(hour + tick.hours, 24)
+        roll, hour = divmod(hour + tick.scalar_hours, 24)
         phase = self._phase + roll
 
         return MeridiemTime(
@@ -261,10 +271,10 @@ class MeridiemTime(time):
             tzinfo=self.tzinfo,
             phase=phase)
 
-    def __internal_sub(self, tick: TimeTick) -> TMeridiemTime:
+    def __sub_tick(self, tick: TimeTick) -> TMeridiemTime:
         phase = self._phase
-        hour = super().hour - tick.hours
-        minute = super().minute - tick.minutes
+        hour = super().hour - tick.scalar_hours
+        minute = super().minute - tick.scalar_minutes
 
         if minute < 0:
             roll_sub, minute = divmod(minute, 60)  # noqa
@@ -282,26 +292,50 @@ class MeridiemTime(time):
             tzinfo=self.tzinfo,
             phase=phase)
 
+    def __sub_time(self, other: TMeridiemTime) -> TimeTick:
+        t1 = self
+        t2 = other
+
+        t1_p = t1.phase
+        t2_p = t2.phase
+
+        if t1_p < 0 or t2_p < 0:
+            phase_shift = abs(min(t1_p, t2_p))
+            t1_p += phase_shift
+            t2_p += phase_shift
+
+        # Use 24hr clock for math simplicity
+        t1_h = super(MeridiemTime, t1).hour + (t1.phase * 24)
+        t2_h = super(MeridiemTime, t2).hour + (t2.phase * 24)
+
+        t1_m = t1.minute + (t1_h * 60)
+        t2_m = t2.minute + (t2_h * 60)
+
+        return TimeTick(f'{t1_m - t2_m}m')
+
     def __add__(self, other: typing.Any) -> TMeridiemTime:
-        if not isinstance(other, TimeTick):
-            raise NotImplementedError
+        if isinstance(other, TimeTick):
+            tick: TimeTick = other
+            if tick.is_negative:
+                return self.__sub_tick(tick)
+            else:
+                return self.__add_tick(tick)
 
-        tick: TimeTick = other
-        if tick.is_negative:
-            return self.__internal_sub(tick)
-        else:
-            return self.__internal_add(tick)
+        raise NotImplementedError
 
-    def __sub__(self, other: typing.Any) -> TMeridiemTime:
-        if not isinstance(other, TimeTick):
-            raise NotImplementedError
+    def __sub__(self, other: typing.Any) -> typing.Union[TMeridiemTime, TimeTick]:
+        if isinstance(other, TimeTick):
+            tick: TimeTick = other
 
-        tick: TimeTick = other
+            if tick.is_negative:
+                return self.__add_tick(tick)
+            else:
+                return self.__sub_tick(tick)
 
-        if tick.is_negative:
-            return self.__internal_add(tick)
-        else:
-            return self.__internal_sub(tick)
+        if isinstance(other, MeridiemTime):
+            return self.__sub_time(other)
+
+        raise NotImplementedError
 
     @staticmethod
     def infer_tick(earlier_time: TMeridiemTime, later_time: TMeridiemTime) -> TimeTick:
@@ -311,22 +345,7 @@ class MeridiemTime(time):
         if not isinstance(later_time, MeridiemTime):
             raise TypeError(f'Cannot infer tick from {later_time.__class__.__name__}')
 
-        temp_et = copy.copy(earlier_time)
-        temp_lt = copy.copy(later_time)
-
-        if temp_et.phase < 0 or temp_lt.phase < 0:
-            phase_shift = abs(min(temp_et.phase, temp_lt._phase))
-            temp_et._phase += phase_shift
-            temp_lt._phase += phase_shift
-
-        # Use 24hr clock for math simplicity
-        l_h = super(type(temp_lt), temp_lt).hour + (temp_lt.phase * 24)
-        e_h = super(type(temp_et), temp_et).hour + (temp_et.phase * 24)
-
-        l_m = temp_lt.minute + (l_h * 60)
-        e_m = temp_et.minute + (e_h * 60)
-
-        return TimeTick(f'{l_m - e_m}m')
+        return later_time - earlier_time
 
 
 class MeridiemTimeIterator:

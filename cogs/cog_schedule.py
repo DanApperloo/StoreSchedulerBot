@@ -16,7 +16,8 @@ from cogs.util import (
     Slash,
     Prefix,
     DateConverter,
-    ForceConverter)
+    ForceConverter,
+    ValidationError)
 from model.schedule_config import ScheduleConfig
 
 
@@ -193,9 +194,19 @@ class ScheduleManager(commands.Cog):
     @prefix_command_nightly.error
     async def error_prefix_command(self, ctx: commands.Context, error):
         if isinstance(error, Prefix.RestrictionError) or \
-                isinstance(error, commands.BadArgument):
-            await ctx.send(str(error))
-            logging.getLogger('discord').exception(error)
+                isinstance(error, commands.ConversionError) or \
+                isinstance(error, commands.BadArgument) or \
+                isinstance(error, ValidationError) or \
+                isinstance(error, commands.CommandInvokeError):
+            if isinstance(error, commands.CommandInvokeError) or \
+                    isinstance(error, commands.ConversionError):
+                msg = str(error.original)
+            else:
+                msg = str(error)
+
+            await ctx.message.reply(msg)
+
+            logging.getLogger('discord').exception(error.original)
         else:
             raise error
 

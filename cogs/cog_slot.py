@@ -24,8 +24,6 @@ from cogs.util import (
     Prefix,
     ValidationError,
     DateConverter,
-    TimeConverter,
-    SlotRangeConverter,
     DateTransformer,
     TimeTransformer,
     SlotRangeTransformer,
@@ -34,7 +32,8 @@ from cogs.util import (
     TimeCompleter,
     ActivityCompleter,
     FreeTimeCompleter,
-    AuthorOnlyTimeCompleter)
+    AuthorOnlyTimeCompleter,
+    FuzzySlotRangeConverter)
 from model.schedule import ScheduleSlotRange
 from model.schedule_config import ScheduleConfig
 from util.date import DateTranslator, CommonDate
@@ -460,7 +459,7 @@ class SlotManager(commands.Cog):
             self,
             ctx: commands.Context,
             date: CommonDate = commands.parameter(converter=DateConverter),
-            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=FuzzySlotRangeConverter(depend="date")),
             opponents: commands.Greedy[discord.Member] = None,
             game: typing.Optional[str] = ''):
 
@@ -476,6 +475,7 @@ class SlotManager(commands.Cog):
             timeslot_range,
             opponents,
             game)
+        await ctx.message.add_reaction("📨")
 
     @app_commands.command(
         name="cancel",
@@ -524,7 +524,8 @@ class SlotManager(commands.Cog):
             self,
             ctx: commands.Context,
             date: CommonDate = commands.parameter(converter=DateConverter),
-            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter)):
+            timeslot_range: ScheduleSlotRange = commands.parameter(
+                converter=FuzzySlotRangeConverter(depend="date"))):
         # Do second level validation
         await self.cancel_validate(ctx.author, date, timeslot_range)
         await self.cancel_issue(
@@ -532,6 +533,7 @@ class SlotManager(commands.Cog):
             ctx.author,
             date,
             timeslot_range)
+        await ctx.message.add_reaction("📨")
 
     @app_commands.command(
         name="accept",
@@ -626,7 +628,7 @@ class SlotManager(commands.Cog):
             ctx: commands.Context,
             author: discord.Member,
             date: CommonDate = commands.parameter(converter=DateConverter),
-            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=FuzzySlotRangeConverter(depend="date")),
             opponents: commands.Greedy[discord.Member] = None,
             game: typing.Optional[str] = ''):
 
@@ -682,7 +684,7 @@ class SlotManager(commands.Cog):
             ctx: commands.Context,
             author: discord.Member,
             date: CommonDate = commands.parameter(converter=DateConverter),
-            timeslot_range: ScheduleSlotRange = commands.parameter(converter=SlotRangeConverter),
+            timeslot_range: ScheduleSlotRange = commands.parameter(converter=FuzzySlotRangeConverter(depend="date")),
             opponents: commands.Greedy[discord.Member] = None):
 
         if not opponents:
@@ -699,10 +701,19 @@ class SlotManager(commands.Cog):
     @prefix_command_weekly.error
     async def error_prefix_command(self, ctx: commands.Context, error):
         if isinstance(error, Prefix.RestrictionError) or \
+                isinstance(error, commands.ConversionError) or \
                 isinstance(error, commands.BadArgument) or \
-                isinstance(error, ValidationError):
-            await ctx.send(str(error))
-            logging.getLogger('discord').exception(error)
+                isinstance(error, ValidationError) or \
+                isinstance(error, commands.CommandInvokeError):
+            if isinstance(error, commands.CommandInvokeError) or \
+                    isinstance(error, commands.ConversionError):
+                msg = str(error.original)
+            else:
+                msg = str(error)
+
+            await ctx.message.reply(msg)
+
+            logging.getLogger('discord').exception(error.original)
         else:
             raise error
 
