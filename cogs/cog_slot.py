@@ -13,13 +13,13 @@ from discord import app_commands
 
 from core.bot_core import ScheduleBot
 from core.util import (
-    Channel,
     timeslot_is_free,
     timeslot_mark_as_free,
     timeslot_is_owned_by_author,
     timeslot_mark_as_owned
 )
 from cogs.util import (
+    Channel,
     Slash,
     Prefix,
     ValidationError,
@@ -28,7 +28,7 @@ from cogs.util import (
     TimeTransformer,
     SlotRangeTransformer,
     DataIdTransformer,
-    DateCompleter,
+    ExistingDateCompleter,
     TimeCompleter,
     ActivityCompleter,
     FreeTimeCompleter,
@@ -85,12 +85,6 @@ class SlotManager(commands.Cog):
         await self.bot.request_channel.send(
             content=f'**Reminder:** Use !request to schedule games in the Store!\n'
                     f'\tSee {self.bot.readonly_channel.mention} for available times and confirmation of your request.')
-
-    @commands.command(name="weekly")
-    @Prefix.admin_only()
-    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
-    async def prefix_command_weekly(self, *_):
-        await self.weekly()
 
     @tasks.loop(time=datetime.time(hour=1))  # Time is updated based on Config in Constructor
     async def weekly_task(self):
@@ -400,6 +394,24 @@ class SlotManager(commands.Cog):
         await bound_schedule.update()
 
     @app_commands.command(
+        name="weekly",
+        description="Perform Weekly maintenance activity")
+    @Slash.admin_only()
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_weekly(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        await self.weekly()
+        await interaction.edit_original_response(
+            content=f'{interaction.user.mention} completed Weekly maintenance.')
+
+    @commands.command(name="weekly")
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def prefix_command_weekly(self, ctx: commands.Context):
+        await self.weekly()
+        await ctx.message.add_reaction("👍")
+
+    @app_commands.command(
         name="request",
         description="Issues a scheduling request for a Store Table at a given date and time")
     @app_commands.describe(
@@ -407,9 +419,9 @@ class SlotManager(commands.Cog):
         timeslot="hr:m{am/pm} for start of reservation",
         timeslot_end="hr:m{am/pm} for end of reservation",
         opponent="(Optional) @mention of Opponent",
-        game="(Optional) Game being played")
+        game="(Optional) Game being played or Usage")
     @app_commands.autocomplete(
-        date=DateCompleter.auto_complete,
+        date=ExistingDateCompleter.auto_complete,
         timeslot=FreeTimeCompleter().auto_complete,
         timeslot_end=FreeTimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete,
         game=ActivityCompleter.auto_complete)
@@ -485,7 +497,7 @@ class SlotManager(commands.Cog):
         timeslot="hr:m{am/pm} for start of reservation",
         timeslot_end="hr:m{am/pm} for end of reservation")
     @app_commands.autocomplete(
-        date=DateCompleter.auto_complete,
+        date=ExistingDateCompleter.auto_complete,
         timeslot=AuthorOnlyTimeCompleter().auto_complete,
         timeslot_end=AuthorOnlyTimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete
     )
@@ -587,11 +599,12 @@ class SlotManager(commands.Cog):
         opponent="(Optional) @mention of Opponent",
         game="(Optional) Game being played")
     @app_commands.autocomplete(
-        date=DateCompleter.auto_complete,
+        date=ExistingDateCompleter.auto_complete,
         timeslot=TimeCompleter().auto_complete,
         timeslot_end=TimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete,
         game=ActivityCompleter.auto_complete
     )
+    @Slash.admin_only()
     @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
     async def slash_command_add(
             self,
@@ -646,10 +659,11 @@ class SlotManager(commands.Cog):
         timeslot="hr:m{am/pm} for start of reservation",
         timeslot_end="hr:m{am/pm} for end of reservation")
     @app_commands.autocomplete(
-        date=DateCompleter.auto_complete,
+        date=ExistingDateCompleter.auto_complete,
         timeslot=TimeCompleter().auto_complete,
         timeslot_end=TimeCompleter(terminus=True, timeslot=TimeTransformer).auto_complete
     )
+    @Slash.admin_only()
     @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
     async def slash_command_remove(
             self,
@@ -722,6 +736,7 @@ class SlotManager(commands.Cog):
     @slash_command_accept.error
     @slash_command_add.error
     @slash_command_remove.error
+    @slash_command_weekly.error
     async def error_slash_command(self, interaction: discord.Interaction, error):
         if isinstance(error, Slash.RestrictionError) or \
                 isinstance(error, app_commands.TransformerError) or \
@@ -736,7 +751,7 @@ class SlotManager(commands.Cog):
                 await interaction.response.send_message(msg, ephemeral=True)
             else:
                 await interaction.edit_original_response(
-                    content=f'Unable to issue {interaction.command.name} with {str(interaction.command.data)}.\n'
+                    content=f'Unable to issue {interaction.command.name} with {str(interaction.namespace)}.\n'
                             f'Please report failure to an administrator.')
 
             logging.getLogger('discord').exception(error.original)

@@ -1,3 +1,4 @@
+import enum
 import logging
 import typing
 import inspect
@@ -10,7 +11,6 @@ from discord.ext import commands
 from discord import app_commands
 
 from core.bot_core import ScheduleBot
-from core.util import Channel
 from model.schedule import ScheduleSlotRange, ScheduleSlot
 from model.schedule_config import ScheduleConfig
 from util.type import *
@@ -21,6 +21,13 @@ from util.time import MeridiemTime
 
 class ValidationError(Exception):
     pass
+
+
+class Channel(enum.Enum):
+    SCHEDULE_READONLY = enum.auto()
+    SCHEDULE_ADMIN = enum.auto()
+    SCHEDULE_DATA = enum.auto()
+    SCHEDULE_REQUEST = enum.auto()
 
 
 class Restriction:
@@ -250,7 +257,7 @@ class DataIdTransformer(app_commands.Transformer):
                 raise app_commands.TransformerError(value, self.type, self)
 
 
-class DateCompleter:
+class ExistingDateCompleter:
     @classmethod
     async def auto_complete(
             cls,
@@ -266,7 +273,8 @@ class DateCompleter:
             def get_cached_days() -> list[str]:
                 full_week = DateTranslator.today() + timedelta(days=7)
                 return [DateTranslator.day_from_date(x.date).lower()
-                        for x in list(bot.schedule_cache.values()) if DateTranslator.today() <= x.date < full_week]
+                        for x in list(bot.schedule_cache.values())
+                        if DateTranslator.today() <= x.date < full_week]
 
             if not current:
                 # Present all predicted open schedule days
@@ -278,6 +286,27 @@ class DateCompleter:
                 else:
                     # Recommend all predicted open schedule days
                     values = [day for day in get_cached_days() if day.startswith(current.lower())]
+
+            return [app_commands.Choice(name=x.capitalize(), value=x) for x in
+                    sorted(values, key=lambda z: DAYS_OF_THE_WEEK.index(z.lower())) if x]
+
+        except Exception as e:
+            logging.getLogger('discord').exception(e)
+            return []
+
+
+class GenericDateCompleter:
+    @classmethod
+    async def auto_complete(
+            cls,
+            _: discord.Interaction,
+            current: str
+    ) -> typing.List[app_commands.Choice[str]]:
+        try:
+            if not current:
+                values = DAYS_OF_THE_WEEK
+            else:
+                values = [day for day in DAYS_OF_THE_WEEK if day.startswith(current.lower())]
 
             return [app_commands.Choice(name=x.capitalize(), value=x) for x in
                     sorted(values, key=lambda z: DAYS_OF_THE_WEEK.index(z.lower())) if x]
@@ -449,11 +478,14 @@ class ActivityCompleter:
     @classmethod
     async def auto_complete(
             cls,
-            _: discord.Interaction,
+            interaction: discord.Interaction,
             current: str
     ) -> typing.List[app_commands.Choice[str]]:
         try:
-            activities = ScheduleConfig.get_activities()
+            activities = ScheduleConfig.get_user_activities()
+
+            if Restriction.is_admin(interaction.user):
+                activities.update(ScheduleConfig.get_admin_activities())
 
             if current:
                 return [app_commands.Choice(name=x, value=x) for x in activities if x.startswith(current)]

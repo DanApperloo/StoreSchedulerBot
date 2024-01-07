@@ -10,11 +10,10 @@ from logging.handlers import RotatingFileHandler
 import discord
 from discord.ext import commands
 
-from cogs.util import Restriction, Prefix
+from cogs.util import Restriction, Prefix, Channel
 from model.schedule_config import ScheduleConfig, DEFAULT_CONFIG
 from util.date import DateTranslator
 from core.bot_core import ScheduleBot
-from core.util import Channel
 
 ########################################################################################################################
 # Bot Configuration and Initialization
@@ -23,21 +22,21 @@ parser = argparse.ArgumentParser()
 group = parser.add_argument_group()
 group.add_argument('-e', '--env', dest='env', default='.env',
                    help="Environment file for dotenv")
-group.add_argument('-s', '--store', dest='store', default=DEFAULT_CONFIG,
-                   help="Json file for Store Config")
+group.add_argument('-c', '--config', dest='config', default=DEFAULT_CONFIG,
+                   help="Json file for Config")
 cmd_args = parser.parse_args()
 
 if not os.path.isfile(cmd_args.env):
     raise FileNotFoundError(cmd_args.env)
 
-if not os.path.isfile(cmd_args.store):
-    raise FileNotFoundError(cmd_args.store)
+if not os.path.isfile(cmd_args.config):
+    raise FileNotFoundError(cmd_args.config)
 
 # Prep environment for private configuration
 load_dotenv(dotenv_path=cmd_args.env)
 
 # Support Singletons
-store_config = ScheduleConfig(config_file=cmd_args.store)
+store_config = ScheduleConfig(config_file=cmd_args.config)
 date_translator = DateTranslator()
 
 # Prep the Bot Logging
@@ -46,7 +45,7 @@ logger.setLevel(logging.DEBUG)
 logging.getLogger('discord.http').setLevel(logging.INFO)
 
 handler = logging.handlers.RotatingFileHandler(
-    filename='discord.log',
+    filename='scheduler.log',
     encoding='utf-8',
     maxBytes=32 * 1024 * 1024,  # 32 MiB
     backupCount=5,  # Rotate through 5 files

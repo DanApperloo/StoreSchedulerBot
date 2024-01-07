@@ -11,13 +11,16 @@ from discord import app_commands
 
 from util.date import DateTranslator, CommonDate
 from core.bot_core import ScheduleBot
-from core.util import Channel
 from cogs.util import (
+    Channel,
     Slash,
     Prefix,
     DateConverter,
     ForceConverter,
-    ValidationError)
+    ValidationError,
+    DateTransformer,
+    ExistingDateCompleter,
+    GenericDateCompleter)
 from model.schedule_config import ScheduleConfig
 
 
@@ -89,12 +92,6 @@ class ScheduleManager(commands.Cog):
 
         print(bot_action_log)
 
-    @commands.command(name="nightly")
-    @Prefix.admin_only()
-    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
-    async def prefix_command_nightly(self, *_):
-        await self.nightly()
-
     @tasks.loop(time=datetime.time(hour=1))  # Time is updated based on Config in Constructor
     async def nightly_task(self):
         await self.nightly()
@@ -102,6 +99,54 @@ class ScheduleManager(commands.Cog):
     @nightly_task.before_loop
     async def before_nightly_task(self):
         await self.bot.wait_until_ready()
+
+    @app_commands.command(
+        name="nightly",
+        description="Perform Nightly maintenance activity")
+    @Slash.admin_only()
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_nightly(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        await self.nightly()
+        await interaction.edit_original_response(
+            content=f'{interaction.user.mention} completed Nightly maintenance.')
+
+    @commands.command(name="nightly")
+    @Prefix.admin_only()
+    @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def prefix_command_nightly(self, ctx: commands.Context):
+        await self.nightly()
+        await ctx.message.add_reaction("👍")
+
+    @app_commands.command(
+        name="open",
+        description="Manually create a date in the Schedule and set it to OPEN")
+    @app_commands.describe(
+        date="Date or Day to OPEN",
+        force="(Optional) Force OPEN if the Day exists and has been CLOSED")
+    @app_commands.autocomplete(
+        date=GenericDateCompleter.auto_complete
+    )
+    @Slash.admin_only()
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_open(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer],
+            force: typing.Optional[bool] = False):
+
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        bound_schedule = await self.bot.open_given(date, force=force)
+        if bound_schedule:
+            await interaction.edit_original_response(
+                content=f'{interaction.user.mention} Opened schedule for '
+                        f'{bound_schedule.schedule.day} - {str(bound_schedule.schedule.date)}.')
+        else:
+            await interaction.edit_original_response(
+                content=f'Cannot open due to existing Open Schedule.\n'
+                        f'Use the \'force\' option to overwrite with a fresh Schedule.')
+
+        await self.bot.regenerate_schedule_cache()
 
     @commands.command(name="open")
     @Prefix.admin_only()
@@ -132,6 +177,28 @@ class ScheduleManager(commands.Cog):
 
         await self.bot.regenerate_schedule_cache()
 
+    @app_commands.command(
+        name="close",
+        description="Manually set a date in the Schedule to OPEN")
+    @app_commands.describe(
+        date="Date or Day to set to CLOSE")
+    @app_commands.autocomplete(
+        date=ExistingDateCompleter.auto_complete
+    )
+    @Slash.admin_only()
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_close(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer]):
+
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        await self.bot.close_given(date)
+        await interaction.edit_original_response(
+            content=f'{interaction.user.mention} Closed schedule {DateTranslator.day_from_date(date)} - {str(date)}.')
+        
+        await self.bot.regenerate_schedule_cache()
+
     @commands.command(name="close")
     @Prefix.admin_only()
     @Prefix.restricted_channel(Channel.SCHEDULE_ADMIN)
@@ -149,6 +216,33 @@ class ScheduleManager(commands.Cog):
         else:
             await self.bot.close_given(date)
             await ctx.send(f'Closed schedule {DateTranslator.day_from_date(date)} - {str(date)}')
+
+        await self.bot.regenerate_schedule_cache()
+
+    @app_commands.command(
+        name="clean",
+        description="Clean (remove) a date in the Schedule")
+    @app_commands.describe(
+        date="Date or Day to set to remove")
+    @app_commands.autocomplete(
+        date=ExistingDateCompleter.auto_complete
+    )
+    @Slash.admin_only()
+    @Slash.restricted_channel(Channel.SCHEDULE_ADMIN)
+    async def slash_command_clean(
+            self,
+            interaction: discord.Interaction,
+            date: app_commands.Transform[CommonDate, DateTransformer]):
+
+        await interaction.response.defer(ephemeral=False, thinking=True)
+        still_open = await self.bot.clean_given(date)
+        if still_open:
+            response_message = f'Unable to clean {DateTranslator.day_from_date(date)} - {str(date)} as it is OPEN'
+        else:
+            response_message = f'Cleaned schedule {DateTranslator.day_from_date(date)} - {str(date)}'
+
+        await interaction.edit_original_response(
+            content=f'{interaction.user.mention} {response_message}.')
 
         await self.bot.regenerate_schedule_cache()
 
@@ -210,6 +304,10 @@ class ScheduleManager(commands.Cog):
         else:
             raise error
 
+    @slash_command_open.error
+    @slash_command_close.error
+    @slash_command_clean.error
+    @slash_command_nightly.error
     async def error_slash_command(self, interaction: discord.Interaction, error):
         if isinstance(error, Slash.RestrictionError) or \
                 isinstance(error, app_commands.CommandInvokeError) or \
@@ -223,7 +321,7 @@ class ScheduleManager(commands.Cog):
                 await interaction.response.send_message(msg, ephemeral=True)
             else:
                 await interaction.edit_original_response(
-                    content=f'Unable to issue {interaction.command.name} with {str(interaction.command.data)}.\n'
+                    content=f'Unable to issue {interaction.command.name} with {str(interaction.namespace)}.\n'
                             f'Please report failure to an administrator.')
 
             logging.getLogger('discord').exception(error.original)

@@ -79,7 +79,7 @@ class ScheduleConfig:
             self._validate()
 
             # Construct Day Configs
-            self.open_days = [str(k).lower() for k in self._config['schedule']['days'].keys()]
+            self.open_days = set([str(k).lower() for k in self._config['schedule']['days'].keys()])
             self.day_configs = dict()
             for day in self.open_days:
                 self.day_configs[day] = DayConfig(
@@ -97,7 +97,8 @@ class ScheduleConfig:
             )
 
             # Construct Activities - Optional
-            self._activities = self._config['schedule'].get('activities', [])
+            self._user_activities = set(self._config['schedule'].get('user_activities', []))
+            self._admin_activities = set(self._config['schedule'].get('admin_activities', []))
 
         except (KeyError, TypeError, ValueError) as e:
             print(f'Invalid config: {self.__config_name}')
@@ -114,16 +115,25 @@ class ScheduleConfig:
                 raise KeyError(f'Invalid day {day}')
 
     @property
-    def activities(self) -> list[str]:
-        return self._activities
+    def user_activities(self) -> set[str]:
+        return self._user_activities
+
+    @property
+    def admin_activities(self) -> set[str]:
+        return self._admin_activities
 
     @staticmethod
-    def get_activities() -> list[str]:
+    def get_user_activities() -> set[str]:
         self = ScheduleConfig.singleton()
-        return self.activities
+        return self.user_activities
 
     @staticmethod
-    def open_days() -> list[str]:
+    def get_admin_activities() -> set[str]:
+        self = ScheduleConfig.singleton()
+        return self.admin_activities
+
+    @staticmethod
+    def open_days() -> set[str]:
         self = ScheduleConfig.singleton()
         return self.open_days
 
